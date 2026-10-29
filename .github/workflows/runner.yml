@@ -1,0 +1,110 @@
+name: Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/runner.yml'
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            ov_os_dir: windows
+            asset: openvino_genai_windows_2026.4.0.0_x86_64.zip
+            artifact: tlc-ovgenai-runner-win32-x64.exe
+          - os: ubuntu-latest
+            ov_os_dir: linux
+            asset: openvino_genai_ubuntu24_2026.4.0.0_x86_64.tar.gz
+            artifact: tlc-ovgenai-runner-linux-x64
+    env:
+      OV_URL: https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.4/${{ matrix.ov_os_dir }}/${{ matrix.asset }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - name: install linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev
+      - name: cache OpenVINO GenAI
+        id: ov-cache
+        uses: actions/cache@v4
+        with:
+          path: ov-dist
+          key: ov-genai-${{ matrix.asset }}
+      - name: download OpenVINO GenAI (posix)
+        if: runner.os != 'Windows' && steps.ov-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir ov-dist && cd ov-dist
+          curl -fSsL "$OV_URL" -o ov.tar.gz
+          tar xzf ov.tar.gz
+          mv openvino_genai_*/* .
+          rm ov.tar.gz
+      - name: download OpenVINO GenAI (windows)
+        if: runner.os == 'Windows' && steps.ov-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          mkdir ov-dist -Force
+          Invoke-WebRequest "$env:OV_URL" -OutFile ov.zip
+          Expand-Archive ov.zip -DestinationPath ov-dist
+          Move-Item ov-dist\openvino_genai_*\* ov-dist\
+          Remove-Item ov.zip
+      - name: configure and build
+        run: |
+          cmake -S . -B build -DOpenVINO_DIR=${{ github.workspace }}/ov-dist/runtime/cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+      - name: rename binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item build\Release\tlc-ovgenai-runner.exe ${{ matrix.artifact }}
+      - name: rename binary (posix)
+        if: runner.os != 'Windows'
+        run: cp build/tlc-ovgenai-runner ${{ matrix.artifact }}
+      - name: loader smoke (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\ov-dist\runtime\bin\intel64\Release;$env:PATH"
+          $out = & .\${{ matrix.artifact }} 2>$null | Out-String
+          if ($LASTEXITCODE -ne 2) { throw "runner exited with $LASTEXITCODE, expected 2" }
+          if ($out -notmatch '"type":"error"') { throw "runner did not emit the error event: $out" }
+      - name: loader smoke (posix)
+        if: runner.os != 'Windows'
+        run: |
+          export LD_LIBRARY_PATH="$PWD/ov-dist/runtime/lib/intel64:$PWD/ov-dist/runtime/3rdparty/tbb/lib"
+          out=$(./${{ matrix.artifact }} 2>/dev/null; true)
+          test "$(echo "$out" | grep -c '"type":"error"')" -eq 1
+      - name: upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: download binaries
+        uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+          path: dist
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
