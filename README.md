@@ -1,8 +1,10 @@
-# TLC OpenVINO GenAI runner
+# Type-Like-Chuck OpenVINO GenAI runner
 
-Native stdio runner for the `ovgenai` engine kind. Loads an OpenVINO IR model
-directory through `ov::genai::LLMPipeline` and serves FIM completions over
-newline-delimited JSON on stdin/stdout.
+Native stdio runner used by the TLC VS Code extension as the `ovgenai` local
+engine kind. Loads an OpenVINO IR model directory through
+`ov::genai::LLMPipeline` and serves FIM completions over newline-delimited
+JSON on stdin/stdout. Targets: **Windows x64** and **Linux x64** (macOS builds
+work for development only and are not a release target).
 
 ## Protocol
 
@@ -21,13 +23,22 @@ time; a request arriving mid-generation is rejected with an `error` event
 
 ## Build
 
-Requires the OpenVINO GenAI archive for the target platform (see the design
-appendix in `openspec/changes/openvino-genai-stdio-runner/design.md`) and CMake.
+Requires [go-task](https://taskfile.dev) and the OpenVINO GenAI archive for the
+target platform (downloaded automatically into `.cache/ov-genai/`):
 
 ```sh
-cmake -S runner -B runner/build -DOpenVINO_DIR=<unpacked-archive>/runtime/cmake
-cmake --build runner/build
+task -t tasks.yaml build   # native build for the host OS → build/
+task -t tasks.yaml linux   # Linux x64 in Docker (works from mac/linux/windows+WSL2)
+task -t tasks.yaml smoke   # NDJSON smoke run (MODEL_DIR=<int4-ov model directory>)
 ```
 
-CI builds the runner for windows-latest and ubuntu-latest and attaches the
-binaries as release artifacts (see `.github/workflows`).
+Release-named binaries land in `build/`:
+`tlc-ovgenai-runner-linux-x64`, `tlc-ovgenai-runner-win32-x64.exe`
+(Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
+
+CI (`.github/workflows/runner.yml`) builds both platforms, runs a loader smoke
+test (the binary must start and report the missing-model error — this proves
+the OpenVINO/TBB libraries resolve), uploads artifacts, and publishes both
+binaries as a GitHub release on `v*` tags. The TLC plugin imports these
+binaries from the latest release (or a pinned `RUNNER_VERSION` tag) when
+packing its `.vsix`.
