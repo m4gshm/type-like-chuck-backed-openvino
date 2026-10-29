@@ -67,6 +67,11 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev
+      - name: cache OpenVINO GenAI runtime
+        uses: actions/cache@v4
+        with:
+          path: .cache/ov-genai
+          key: ov-genai-${{ hashFiles('tasks.yaml') }}-linux
       - name: cache test model
         uses: actions/cache@v4
         with:

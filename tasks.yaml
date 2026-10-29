@@ -7,8 +7,8 @@ vars:
   OV_MAC_VERSION: '2026.4.1.0rc2' # macOS archives only exist as pre-release
   OV_CACHE_DIR: '.cache/ov-genai'
   BUILD_DIR: 'build'
-  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64.tar.gz'
-  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64.zip'
+  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.4/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64.tar.gz'
+  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.4/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64.zip'
   URL_MAC: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/pre-release/{{.OV_MAC_VERSION}}/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64.tar.gz'
   DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64'
   DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64'
@@ -61,14 +61,16 @@ tasks:
       - '{{.DIR_WINDOWS}}/runtime/bin/**'
 
   download:
-    desc: Resumable download; drops proxy HTML error pages before resuming
+    desc: Resumable download; retries on bad responses and HTML error pages
     cmds:
       - |
         f='{{.FILE}}'
         for i in 1 2 3 4 5 6; do
-          [ -f "$f" ] && [ "$(head -c 4 "$f")" = "HTTP" ] && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && exit 0
-          echo "download attempt $i failed, resuming…"; sleep 3
+          # drop junk from failed attempts (proxy HTML pages, S3 bucket listings)
+          [ -f "$f" ] && ! gzip -t "$f" 2>/dev/null && rm -f "$f"
+          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" || { sleep 3; continue; }
+          gzip -t "$f" 2>/dev/null && exit 0
+          rm -f "$f"; echo "download attempt $i failed, resuming…"; sleep 3
         done
         exit 1
 
