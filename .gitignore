@@ -1,4 +1,3 @@
-# Build artifacts
 build/
-# OpenVINO GenAI runtime downloaded by the build tasks
 .cache/
+.task/

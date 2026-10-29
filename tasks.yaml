@@ -1,13 +1,4 @@
-# Backend build automation (go-task: brew/choco install go-task).
-# Produces release-named binaries in build/ — the TLC plugin imports them
-# from this directory locally, or from GitHub releases in CI:
-#   build/tlc-ovgenai-runner-linux-x64
-#   build/tlc-ovgenai-runner-win32-x64.exe
-#   build/tlc-ovgenai-runner-macos-arm64   (dev builds only, not a target)
-#
-# Windows binaries require a native Windows host or CI: OpenVINO ships MSVC
-# libs, cross-compilation is not supported. Linux builds in Docker
-# (--platform linux/amd64) from any host.
+# Build automation: `task -t tasks.yaml <task>`. See README.md for usage.
 
 version: '3'
 
@@ -23,6 +14,7 @@ vars:
   DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64'
   DIR_MAC: '{{.OV_CACHE_DIR}}/mac/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64'
   OV_DIR_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/cmake'
+  OV_LIB_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
 
 tasks:
   default:
@@ -139,8 +131,8 @@ tasks:
     desc: NDJSON smoke run (set MODEL_DIR to an int4-ov model directory)
     deps: [build]
     env:
-      DYLD_LIBRARY_PATH: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
-      LD_LIBRARY_PATH: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
+      DYLD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+      LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
     cmds:
       - |
         echo '{"type":"generate","id":1,"prompt":"<|fim_prefix|>def add(a, b):\n    <|fim_suffix|>\n    return a + b<|fim_middle|>","maxTokens":16,"stop":["\n"]}' \
@@ -153,3 +145,35 @@ tasks:
       - rm -rf '{{.BUILD_DIR}}' '{{.OV_CACHE_DIR}}'
       - cmd: powershell -Command "Remove-Item -Recurse -Force build,.cache -ErrorAction SilentlyContinue"
         platforms: [windows]
+
+  ci:
+    desc: Build for the host OS and run the loader smoke check (CI entry point)
+    cmds:
+      - task: build
+      - task: smoke:loader
+
+  smoke:loader:
+    desc: Run the built binary with no args; must exit 2 and emit an error event
+    deps: ['smoke:loader:{{if eq OS "windows"}}windows{{else}}posix{{end}}']
+
+  smoke:loader:posix:
+    platforms: [linux, darwin]
+    env:
+      DYLD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+      LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+    cmds:
+      - |
+        code=0
+        out=$('{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}' 2>/dev/null) || code=$?
+        echo "$out"
+        [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
+        echo "$out" | grep -q '"type":"error"' || { echo "no error event in output" >&2; exit 1; }
+
+  smoke:loader:windows:
+    platforms: [windows]
+    cmds:
+      - |
+        $env:PATH = "$PWD\{{.DIR_WINDOWS}}\runtime\bin\intel64\Release;$env:PATH"
+        $out = & .\{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe 2>$null | Out-String
+        if ($LASTEXITCODE -ne 2) { throw "expected exit code 2, got $LASTEXITCODE" }
+        if ($out -notmatch '"type":"error"') { throw "no error event in output" }
