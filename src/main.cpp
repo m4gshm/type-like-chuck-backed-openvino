@@ -1,46 +1,20 @@
 #include <atomic>
-#include <algorithm>
-#include <chrono>
-#include <condition_variable>
-#include <cstdlib>
 #include <iostream>
-#include <mutex>
-#include <optional>
+#include <memory>
 #include <set>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <openvino/genai/generation_config.hpp>
 #include <openvino/genai/llm_pipeline.hpp>
 #include <openvino/genai/streamer_base.hpp>
 
+#include "runner.hpp"
+
 namespace {
 
 using json = nlohmann::json;
-
-struct Options {
-    std::string modelPath;
-    std::string device = "CPU";
-    std::size_t contextLength = 0;
-};
-
-Options parseArgs(int argc, char** argv) {
-    Options options;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
-        if (arg == "--model") {
-            options.modelPath = next();
-        } else if (arg == "--device") {
-            options.device = next();
-        } else if (arg == "--ctx") {
-            options.contextLength = std::stoull(next());
-        }
-    }
-    return options;
-}
 
 void emit(const json& event) {
     std::cout << event.dump() << '\n';
@@ -85,13 +59,7 @@ public:
 
 private:
     void handleGenerate(const json& message) {
-        GenerateRequest request;
-        request.id = message.value("id", 0LL);
-        request.prompt = message.value("prompt", "");
-        request.maxTokens = message.value("maxTokens", std::size_t{128});
-        if (message.contains("stop") && message["stop"].is_array()) {
-            request.stop = message["stop"].get<std::vector<std::string>>();
-        }
+        const runner::GenerateRequest request = runner::parseRequest(message);
 
         if (busy_.exchange(true)) {
             emit(json{{"type", "error"}, {"id", request.id}, {"message", "busy"}});
@@ -104,7 +72,7 @@ private:
         startGeneration(request);
     }
 
-    void startGeneration(const GenerateRequest& request) {
+    void startGeneration(const runner::GenerateRequest& request) {
         worker_ = std::thread([this, request] {
             ov::genai::GenerationConfig config;
             config.max_new_tokens = request.maxTokens;
@@ -121,14 +89,9 @@ private:
                         emit(json{{"type", "token"}, {"text", token}});
                         return ov::genai::StreamingStatus::RUNNING;
                     });
-                const char* reason = cancelled_.load() ? "cancel" : "stop";
-                if (reason[0] == 's') {
-                    const std::string& text = results.texts.empty() ? std::string() : results.texts.front();
-                    const bool hitStop = std::any_of(request.stop.begin(), request.stop.end(), [&](const std::string& stop) {
-                        return text.size() >= stop.size() && text.compare(text.size() - stop.size(), stop.size(), stop) == 0;
-                    });
-                    reason = hitStop ? "stop" : "length";
-                }
+                const int nativeReason = results.finish_reasons.empty() ? 0
+                    : static_cast<int>(results.finish_reasons.front());
+                const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
                 emit(json{{"type", "done"}, {"id", request.id}, {"finishReason", reason}});
             } catch (const std::exception& e) {
                 emit(json{{"type", "error"}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
@@ -154,7 +117,7 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Options options = parseArgs(argc, argv);
+    const runner::Options options = runner::parseArgs(argc, argv);
     if (options.modelPath.empty()) {
         emit(json{{"type", "error"}, {"id", nullptr}, {"message", "no --model given"}});
         return 2;

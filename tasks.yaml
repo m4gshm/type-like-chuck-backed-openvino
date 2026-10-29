@@ -147,10 +147,30 @@ tasks:
         platforms: [windows]
 
   ci:
-    desc: Build for the host OS and run the loader smoke check (CI entry point)
+    desc: Build for the host OS, run unit tests and the loader smoke check (CI entry point)
     cmds:
       - task: build
+      - task: test
       - task: smoke:loader
+
+  test:
+    desc: Run unit tests (doctest via ctest)
+    deps: [build]
+    cmds:
+      - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
+      - ctest --test-dir '{{.BUILD_DIR}}/{{OS}}' --output-on-failure -C Release
+
+  e2e:
+    desc: 'Full E2E suite incl. FIM (downloads the default model into .cache if needed)'
+    deps: [build]
+    cmds:
+      - python3 scripts/e2e.py test --model '{{.E2E_MODEL_DIR | default ".cache/models/qwen2.5-coder-0.5b-int4-ov"}}'
+
+  e2e:protocol:
+    desc: E2E protocol tests only (no model needed)
+    deps: [build]
+    cmds:
+      - python3 scripts/e2e.py test
 
   smoke:loader:
     desc: Run the built binary with no args; must exit 2 and emit an error event

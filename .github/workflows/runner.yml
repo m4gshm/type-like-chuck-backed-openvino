@@ -3,14 +3,13 @@ name: Runner
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
-    paths:
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'tasks.yaml'
-      - '.github/workflows/runner.yml'
     tags: ['v*']
   pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: runner-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -52,6 +51,28 @@ jobs:
           name: ${{ matrix.artifact }}
           path: build/${{ matrix.artifact }}
           retention-days: 30
+
+  e2e:
+    name: e2e (model suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - name: install go-task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev
+      - name: cache test model
+        uses: actions/cache@v4
+        with:
+          path: .cache/models
+          key: e2e-model-${{ hashFiles('scripts/e2e.py') }}
+      - name: run e2e suite
+        run: task -t tasks.yaml e2e
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

@@ -1,0 +1,79 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
+#include <string>
+#include <vector>
+
+#include "runner.hpp"
+
+using runner::finishReason;
+using runner::parseArgs;
+using runner::parseRequest;
+
+TEST_CASE("parseArgs") {
+    SUBCASE("defaults") {
+        char* argv[] = {(char*)"prog"};
+        const auto o = parseArgs(1, argv);
+        CHECK(o.modelPath.empty());
+        CHECK(o.device == "CPU");
+        CHECK(o.contextLength == 0);
+    }
+    SUBCASE("all flags") {
+        char* argv[] = {(char*)"prog", (char*)"--model", (char*)"/m", (char*)"--device", (char*)"GPU", (char*)"--ctx", (char*)"4096"};
+        const auto o = parseArgs(7, argv);
+        CHECK(o.modelPath == "/m");
+        CHECK(o.device == "GPU");
+        CHECK(o.contextLength == 4096);
+    }
+    SUBCASE("unknown args ignored") {
+        char* argv[] = {(char*)"prog", (char*)"--wat", (char*)"--model", (char*)"/m"};
+        const auto o = parseArgs(4, argv);
+        CHECK(o.modelPath == "/m");
+    }
+    SUBCASE("missing value yields empty") {
+        char* argv[] = {(char*)"prog", (char*)"--model"};
+        const auto o = parseArgs(2, argv);
+        CHECK(o.modelPath.empty());
+    }
+    SUBCASE("ctx parse failure throws") {
+        char* argv[] = {(char*)"prog", (char*)"--ctx", (char*)"abc"};
+        CHECK_THROWS(parseArgs(3, argv));
+    }
+}
+
+TEST_CASE("parseRequest") {
+    SUBCASE("full message") {
+        const auto msg = runner::json::parse(R"({"id":7,"prompt":"p","maxTokens":32,"stop":["\n","END"]})");
+        const auto r = parseRequest(msg);
+        CHECK(r.id == 7);
+        CHECK(r.prompt == "p");
+        CHECK(r.maxTokens == 32);
+        CHECK(r.stop == std::vector<std::string>{"\n", "END"});
+    }
+    SUBCASE("defaults") {
+        const auto r = parseRequest(runner::json::object());
+        CHECK(r.id == 0);
+        CHECK(r.prompt.empty());
+        CHECK(r.maxTokens == 128);
+        CHECK(r.stop.empty());
+    }
+    SUBCASE("non-array stop ignored") {
+        const auto r = parseRequest(runner::json{{"stop", "\n"}});
+        CHECK(r.stop.empty());
+    }
+}
+
+TEST_CASE("finishReason") {
+    SUBCASE("cancel wins over everything") {
+        CHECK(finishReason(true, 1) == "cancel");
+        CHECK(finishReason(true, 2) == "cancel");
+    }
+    SUBCASE("native LENGTH (2) means token limit") {
+        CHECK(finishReason(false, 2) == "length");
+    }
+    SUBCASE("everything else is a stop") {
+        CHECK(finishReason(false, 0) == "stop");  // NONE
+        CHECK(finishReason(false, 1) == "stop");  // STOP (EOS / stop strings)
+        CHECK(finishReason(false, 3) == "stop");  // TOOL_CALL
+    }
+}

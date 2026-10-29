@@ -15,16 +15,23 @@ find_package(TBB QUIET
   NO_DEFAULT_PATH)
 
 add_executable(tlc-ovgenai-runner src/main.cpp)
-target_include_directories(tlc-ovgenai-runner PRIVATE vendor)
+target_include_directories(tlc-ovgenai-runner PRIVATE vendor src)
 target_link_libraries(tlc-ovgenai-runner PRIVATE openvino::runtime openvino::genai)
 if(TBB_FOUND)
   target_link_libraries(tlc-ovgenai-runner PRIVATE TBB::tbb)
 endif()
 
+enable_testing()
+add_executable(runner-tests src/tests.cpp)
+target_include_directories(runner-tests PRIVATE vendor src)
+add_test(NAME runner-tests COMMAND runner-tests)
+
 if(MSVC)
   target_compile_options(tlc-ovgenai-runner PRIVATE /W4 /EHsc)
+  target_compile_options(runner-tests PRIVATE /W4 /EHsc)
 else()
   target_compile_options(tlc-ovgenai-runner PRIVATE -Wall -Wextra)
+  target_compile_options(runner-tests PRIVATE -Wall -Wextra)
 endif()
 
 install(TARGETS tlc-ovgenai-runner RUNTIME DESTINATION .)
