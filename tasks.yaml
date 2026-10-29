@@ -95,7 +95,7 @@ tasks:
   build:windows:
     platforms: [windows]
     cmds:
-      - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.DIR_WINDOWS}}\runtime\cmake' -DCMAKE_BUILD_TYPE=Release
+      - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.USER_WORKING_DIR}}\{{.DIR_WINDOWS}}\runtime\cmake' -DCMAKE_BUILD_TYPE=Release
       - cmake --build '{{.BUILD_DIR}}\windows' --config Release
       - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe'"
     sources:
