@@ -207,7 +207,13 @@ tasks:
     platforms: [windows]
     cmds:
       - |
-        $env:PATH = "$PWD\{{.DIR_WINDOWS}}\runtime\bin\intel64\Release;$env:PATH"
-        $out = & .\{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe 2>$null | Out-String
-        if ($LASTEXITCODE -ne 2) { throw "expected exit code 2, got $LASTEXITCODE" }
-        if ($out -notmatch '"type":"error"') { throw "no error event in output" }
+        code=0
+        # task interprets cmds with its own sh; ';' is the Windows PATH separator
+        export PATH="$PWD/{{.DIR_WINDOWS}}/runtime/bin/intel64/Release;$PWD/{{.DIR_WINDOWS}}/runtime/3rdparty/tbb/bin;$PATH"
+        out=$('{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe' 2>/dev/null) || code=$?
+        echo "$out"
+        [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
+        case "$out" in
+          *'"type":"error"'*) ;;
+          *) echo "no error event in output" >&2; exit 1 ;;
+        esac
