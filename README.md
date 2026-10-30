@@ -8,7 +8,19 @@ work for development only and are not a release target).
 
 ## Protocol
 
-Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N]`
+Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...]`
+(`--device` defaults to GPU)
+
+`--prop` passes OpenVINO plugin properties to the pipeline (repeatable); values are
+typed automatically: `true`/`false` → bool, integer → int64, otherwise string, e.g.
+`--prop NPUW_LLM_MAX_PROMPT_LEN=2048 --prop CACHE_DIR=C:\tmp\ovcache`.
+
+On NPU the runner applies tuned defaults (`NPU_TURBO=YES`, `NPU_COMPILER_TYPE=PLUGIN`,
+`NPUW_LLM_GENERATE_HINT=BEST_PERF`, dynamic prefill with chunk 256 and pyramid
+attention, `NPUW_DEVICES=NPU,GPU` fallback, …); `--prop` overrides win, and `--ctx N`
+maps to `MAX_PROMPT_LEN` (compiled NPU graph window). Compiled NPU blobs are cached
+in `.cache/npu-blobs/` (relative to the working directory) so only the first start
+compiles; override with `--prop CACHE_DIR=...`.
 
 Events on stdout (one JSON object per line):
 - `{"type":"ready","model":...,"device":...,"ctx":N}` after the pipeline loads;
@@ -27,9 +39,8 @@ Requires [go-task](https://taskfile.dev) and the OpenVINO GenAI archive for the
 target platform (downloaded automatically into `.cache/ov-genai/`):
 
 ```sh
-task -t tasks.yaml build   # native build for the host OS → build/
-task -t tasks.yaml linux   # Linux x64 in Docker (works from mac/linux/windows+WSL2)
-task -t tasks.yaml smoke   # NDJSON smoke run (MODEL_DIR=<int4-ov model directory>)
+task build   # download runtime + native build for the host OS → build/
+task smoke   # NDJSON smoke run (MODEL_DIR=<int8-ov model directory>)
 ```
 
 Release-named binaries land in `build/`:

@@ -19,11 +19,10 @@ x64; macOS is dev-only.
 ## Commands
 
 ```sh
-task -t tasks.yaml build    # native build for the host OS → build/
-task -t tasks.yaml linux    # Linux x64 in Docker (--platform linux/amd64)
-task -t tasks.yaml test     # unit tests (doctest via ctest)
-task -t tasks.yaml e2e:protocol  # E2E protocol tests, no model needed
-task -t tasks.yaml e2e      # full E2E suite incl. FIM (default model auto-downloaded into .cache/)
+task build    # runtime + native build for the host OS → build/
+task test
+task e2e:protocol
+task e2e
 python3 scripts/e2e.py manual --model <dir>  # interactive NDJSON client (/fim helper, /quit)
 ```
 
@@ -43,6 +42,6 @@ libs; no cross-compilation). OpenVINO GenAI archives are downloaded into
 - Binaries in `build/` use release-asset names (`tlc-ovgenai-runner-linux-x64`,
   `tlc-ovgenai-runner-win32-x64.exe`); the TLC plugin imports them as-is.
 - Keep testable logic in `src/runner.hpp` pure (no I/O, no OpenVINO types); unit
-  tests go to `src/tests.cpp` and must pass via `task -t tasks.yaml test`. No new
+  tests go to `src/tests.cpp` and must pass via `task test`. No new
   dependencies beyond OpenVINO GenAI, TBB (bundled), and the vendored
   nlohmann/json and doctest headers.

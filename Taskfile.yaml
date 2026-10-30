@@ -1,27 +1,27 @@
-# Build automation: `task -t tasks.yaml <task>`. See README.md for usage.
+﻿# Build automation: `task <task>`. See README.md for usage.
 
 version: '3'
 
 vars:
-  OV_VERSION: '2026.4.0.0'
-  OV_MAC_VERSION: '2026.4.1.0rc2' # macOS archives only exist as pre-release
+  OV_VERSION: '2026.4.1' # server path; file names embed the full OV_PKG_VERSION
+  OV_PKG_VERSION: '2026.4.1.0'
   OV_CACHE_DIR: '.cache/ov-genai'
   BUILD_DIR: 'build'
-  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.4/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64.tar.gz'
-  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.4/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64.zip'
+  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64.tar.gz'
+  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64.zip'
   URL_MAC: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/pre-release/{{.OV_MAC_VERSION}}/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64.tar.gz'
   DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64'
   DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64'
   DIR_MAC: '{{.OV_CACHE_DIR}}/mac/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64'
   OV_DIR_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/cmake'
   OV_LIB_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
+  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int8-ov'
 
 tasks:
   default:
-    desc: Build the runner for the host OS and Linux (Docker)
+    desc: Download the OpenVINO runtime, build the runner for the host OS and run unit tests
     cmds:
-      - task: build
-      - task: linux
+      - task: test
 
   runtime:
     desc: Download and unpack the OpenVINO GenAI archive for the host OS
@@ -54,9 +54,13 @@ tasks:
   runtime:windows:
     platforms: [windows]
     status:
-      - powershell -Command "Test-Path '{{.DIR_WINDOWS}}\runtime\bin'"
+      - powershell -Command "if (!(Test-Path '{{.DIR_WINDOWS}}\runtime\bin')) { exit 1 }"
     cmds:
-      - powershell -Command "New-Item -ItemType Directory -Force '{{.OV_CACHE_DIR}}\windows' | Out-Null; Invoke-WebRequest '{{.URL_WINDOWS}}' -OutFile '{{.OV_CACHE_DIR}}\windows\ov.zip'; Expand-Archive '{{.OV_CACHE_DIR}}\windows\ov.zip' -DestinationPath '{{.OV_CACHE_DIR}}\windows' -Force; Remove-Item '{{.OV_CACHE_DIR}}\windows\ov.zip'"
+      - powershell -Command "New-Item -ItemType Directory -Force '{{.OV_CACHE_DIR}}\windows' | Out-Null"
+      - task: download
+        vars: { URL: '{{.URL_WINDOWS}}', FILE: '{{.OV_CACHE_DIR}}/windows/ov.zip' }
+      - C:/Windows/System32/tar.exe -xf '{{.OV_CACHE_DIR}}\windows\ov.zip' -C '{{.OV_CACHE_DIR}}\windows'
+      - powershell -Command "Remove-Item '{{.OV_CACHE_DIR}}\windows\ov.zip'"
     generates:
       - '{{.DIR_WINDOWS}}/runtime/bin/**'
 
@@ -66,11 +70,9 @@ tasks:
       - |
         f='{{.FILE}}'
         for i in 1 2 3 4 5 6; do
-          # drop junk from failed attempts (proxy HTML pages, S3 bucket listings)
-          [ -f "$f" ] && ! gzip -t "$f" 2>/dev/null && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" || { sleep 3; continue; }
-          gzip -t "$f" 2>/dev/null && exit 0
-          rm -f "$f"; echo "download attempt $i failed, resuming…"; sleep 3
+          [ -f "$f" ] && [ "$(head -c 4 "$f")" = "HTTP" ] && rm -f "$f"
+          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && exit 0
+          echo "download attempt $i failed, resumingвЂ¦"; sleep 3
         done
         exit 1
 
@@ -106,31 +108,9 @@ tasks:
     generates:
       - '{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe'
 
-  linux:
-    desc: Build the Linux x64 runner in Docker (works from mac/linux/windows+WSL2)
-    deps: [runtime:linux]
-    cmds:
-      - |
-        docker run --rm --platform linux/amd64 \
-          -v '{{.USER_WORKING_DIR}}:/src:ro' \
-          -v '{{.USER_WORKING_DIR}}/{{.OV_CACHE_DIR}}/linux:/ov:ro' \
-          -v '{{.USER_WORKING_DIR}}/{{.BUILD_DIR}}/docker:/out' \
-          ubuntu:24.04 bash -c '\
-            apt-get update -qq >/dev/null && \
-            apt-get install -y -qq cmake g++ ocl-icd-opencl-dev >/dev/null && \
-            cmake -S /src -B /tmp/build -DOpenVINO_DIR=/ov/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64/runtime/cmake -DCMAKE_BUILD_TYPE=Release && \
-            cmake --build /tmp/build --config Release && \
-            cp /tmp/build/tlc-ovgenai-runner /out/'
-      - cp '{{.BUILD_DIR}}/docker/tlc-ovgenai-runner' '{{.BUILD_DIR}}/tlc-ovgenai-runner-linux-x64'
-    sources:
-      - src/**/*
-      - CMakeLists.txt
-      - '{{.OV_CACHE_DIR}}/linux/**'
-    generates:
-      - '{{.BUILD_DIR}}/tlc-ovgenai-runner-linux-x64'
 
   smoke:
-    desc: NDJSON smoke run (set MODEL_DIR to an int4-ov model directory)
+    desc: NDJSON smoke run (set MODEL_DIR to an int8-ov model directory)
     deps: [build]
     env:
       DYLD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
@@ -139,13 +119,13 @@ tasks:
       - |
         echo '{"type":"generate","id":1,"prompt":"<|fim_prefix|>def add(a, b):\n    <|fim_suffix|>\n    return a + b<|fim_middle|>","maxTokens":16,"stop":["\n"]}' \
         | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}{{end}} \
-        --model "${MODEL_DIR:?set MODEL_DIR to an int4-ov model directory}" --device CPU
+        --model "${MODEL_DIR:?set MODEL_DIR to an int8-ov model directory}" --device CPU
 
   clean:
     desc: Remove build artifacts and the downloaded OpenVINO runtime cache
     cmds:
       - rm -rf '{{.BUILD_DIR}}' '{{.OV_CACHE_DIR}}'
-      - cmd: powershell -Command "Remove-Item -Recurse -Force build,.cache -ErrorAction SilentlyContinue"
+      - cmd: powershell -Command "if (Test-Path build) { Remove-Item -Recurse -Force build }; if (Test-Path .cache) { Remove-Item -Recurse -Force .cache }"
         platforms: [windows]
 
   ci:
@@ -162,11 +142,38 @@ tasks:
       - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
       - ctest --test-dir '{{.BUILD_DIR}}/{{OS}}' --output-on-failure -C Release
 
+  model:
+    desc: Download the default E2E model into {{.MODEL_DIR}}
+    status:
+      - test -d '{{.MODEL_DIR}}'
+    cmds:
+      - python3 scripts/e2e.py download-model
+
   e2e:
     desc: 'Full E2E suite incl. FIM (downloads the default model into .cache if needed)'
-    deps: [build]
+    deps: [build, model]
+    env:
+      E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
     cmds:
-      - python3 scripts/e2e.py test --model '{{.E2E_MODEL_DIR | default ".cache/models/qwen2.5-coder-0.5b-int4-ov"}}'
+      - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
+
+  e2e:npu:
+    desc: 'Full E2E suite on NPU only (long ready timeout: first load compiles the graph)'
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800' }
+
+  e2e:gpu:
+    desc: Full E2E suite on GPU only
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: GPU }
+
+  e2e:cpu:
+    desc: Full E2E suite on CPU only
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: CPU }
 
   e2e:protocol:
     desc: E2E protocol tests only (no model needed)

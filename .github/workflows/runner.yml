@@ -39,7 +39,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev
       - name: build and loader smoke
-        run: task -t tasks.yaml ci
+        run: task ci
       - name: cache OpenVINO GenAI
         if: always()
         uses: actions/cache@v4
@@ -78,7 +78,7 @@ jobs:
           path: .cache/models
           key: e2e-model-${{ hashFiles('scripts/e2e.py') }}
       - name: run e2e suite
-        run: task -t tasks.yaml e2e
+        run: task e2e
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

@@ -17,6 +17,9 @@ namespace {
 using json = nlohmann::json;
 
 void emit(const json& event) {
+    if (event.value("type", "") == "error") {
+        std::cerr << "[runner] " << event.dump() << '\n';
+    }
     std::cout << event.dump() << '\n';
     std::cout.flush();
 }
@@ -126,7 +129,27 @@ int main(int argc, char** argv) {
     std::unique_ptr<ov::genai::LLMPipeline> pipeline;
     try {
         ov::genai::Tokenizer tokenizer(options.modelPath);
-        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer, options.device);
+        auto typed = [](const std::string& raw) -> ov::Any {
+            if (raw == "true" || raw == "false") {
+                return raw == "true";
+            }
+            try {
+                size_t pos = 0;
+                long long n = std::stoll(raw, &pos);
+                if (pos == raw.size()) {
+                    return n;
+                }
+            } catch (const std::exception&) {
+            }
+            return raw;
+        };
+        ov::AnyMap props;
+        for (const auto& [key, raw] : runner::effectiveProperties(
+                 options.properties, options.contextLength,
+                 options.device.find("NPU") != std::string::npos)) {
+            props.emplace(key, typed(raw));
+        }
+        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer, options.device, props);
     } catch (const std::exception& e) {
         emit(json{{"type", "error"}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
         return 1;

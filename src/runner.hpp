@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -13,8 +14,10 @@ using json = nlohmann::json;
 
 struct Options {
     std::string modelPath;
-    std::string device = "CPU";
+    std::string device = "GPU";
     std::size_t contextLength = 0;
+    // OpenVINO plugin properties from --prop KEY=VALUE, passed to the pipeline as-is.
+    std::map<std::string, std::string> properties;
 };
 
 inline Options parseArgs(int argc, char** argv) {
@@ -28,6 +31,12 @@ inline Options parseArgs(int argc, char** argv) {
             options.device = next();
         } else if (arg == "--ctx") {
             options.contextLength = std::stoull(next());
+        } else if (arg == "--prop") {
+            const std::string kv = next();
+            const auto eq = kv.find('=');
+            if (eq != std::string::npos && eq > 0) {
+                options.properties[kv.substr(0, eq)] = kv.substr(eq + 1);
+            }
         }
     }
     return options;
@@ -58,6 +67,43 @@ inline std::string finishReason(bool cancelled, int nativeReason) {
     // Mirrors ov::genai::GenerationFinishReason: LENGTH == 2 means the token
     // limit was reached; STOP (EOS or stop strings) and everything else is a stop.
     return nativeReason == 2 ? "length" : "stop";
+}
+
+// NPU property defaults tuned for LLM latency/throughput (mirrors the proven
+// agent NPU config: turbo, plugin compiler, dynamic prefill, pyramid attention,
+// NPU->GPU fallback). --prop values win over these.
+inline std::map<std::string, std::string> npuDefaults() {
+    return {
+        {"NPU_USE_NPUW", "YES"},
+        {"NPU_TURBO", "YES"},
+        {"NPU_COMPILER_TYPE", "PLUGIN"},
+        {"NPUW_LLM_GENERATE_HINT", "BEST_PERF"},
+        {"NPUW_LLM_PREFILL_HINT", "DYNAMIC"},
+        {"NPUW_LLM_PREFILL_CHUNK_SIZE", "256"},
+        {"NPUW_LLM_PREFILL_ATTENTION_HINT", "PYRAMID"},
+        {"NPUW_LLM_ENABLE_PREFIX_CACHING", "YES"},
+        {"NPUW_LLM_ENABLE_CONTINUOUS_PREFILL", "NO"},
+        {"NPUW_LLM_ENABLE_BLOCK_BASED_KV_CACHE", "NO"},
+        {"NPUW_LLM_SHARED_HEAD", "YES"},
+        {"NPUW_PARALLEL_COMPILE", "YES"},
+        {"NPUW_DEVICES", "NPU,GPU"},
+        {"LOG_LEVEL", "LOG_INFO"}, // OpenVINO log level: shows NPU compile progress on stderr
+        // Compiled-blob cache relative to the runner cwd; override with --prop CACHE_DIR=...
+        {"CACHE_DIR", ".cache/npu-blobs"},
+    };
+}
+
+inline std::map<std::string, std::string> effectiveProperties(
+        std::map<std::string, std::string> user, std::size_t contextLength, bool npu) {
+    if (npu) {
+        for (const auto& [key, value] : npuDefaults()) {
+            user.emplace(key, value);
+        }
+        if (contextLength > 0) {
+            user.emplace("MAX_PROMPT_LEN", std::to_string(contextLength));
+        }
+    }
+    return user;
 }
 
 }  // namespace runner

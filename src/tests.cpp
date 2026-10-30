@@ -15,7 +15,7 @@ TEST_CASE("parseArgs") {
         char* argv[] = {(char*)"prog"};
         const auto o = parseArgs(1, argv);
         CHECK(o.modelPath.empty());
-        CHECK(o.device == "CPU");
+        CHECK(o.device == "GPU");
         CHECK(o.contextLength == 0);
     }
     SUBCASE("all flags") {
@@ -38,6 +38,30 @@ TEST_CASE("parseArgs") {
     SUBCASE("ctx parse failure throws") {
         char* argv[] = {(char*)"prog", (char*)"--ctx", (char*)"abc"};
         CHECK_THROWS(parseArgs(3, argv));
+    }
+    SUBCASE("properties parsed as key=value") {
+        char* argv[] = {(char*)"prog", (char*)"--prop", (char*)"NPUW_LLM_MAX_PROMPT_LEN=2048",
+                        (char*)"--prop", (char*)"NPUW_DYN_BATCH=true", (char*)"--prop", (char*)"CACHE_DIR=./c",
+                        (char*)"--prop", (char*)"novalue", (char*)"--prop", (char*)"=novalue"};
+        const auto o = parseArgs(11, argv);
+        CHECK(o.properties.size() == 3);
+        CHECK(o.properties.at("NPUW_LLM_MAX_PROMPT_LEN") == "2048");
+        CHECK(o.properties.at("NPUW_DYN_BATCH") == "true");
+        CHECK(o.properties.at("CACHE_DIR") == "./c");
+    }
+    SUBCASE("npu defaults applied, user props win") {
+        char* argv[] = {(char*)"prog", (char*)"--device", (char*)"NPU", (char*)"--ctx", (char*)"4096",
+                        (char*)"--prop", (char*)"NPU_TURBO=NO"};
+        const auto props = runner::effectiveProperties(parseArgs(7, argv).properties, 4096, true);
+        CHECK(props.size() == 16);
+        CHECK(props.at("NPU_TURBO") == "NO");                       // user override wins
+        CHECK(props.at("NPU_USE_NPUW") == "YES");                   // default added
+        CHECK(props.at("NPUW_DEVICES") == "NPU,GPU");               // fallback chain
+        CHECK(props.at("MAX_PROMPT_LEN") == "4096");                // --ctx wired on NPU
+    }
+    SUBCASE("cpu gets no npu props") {
+        const auto props = runner::effectiveProperties({}, 4096, false);
+        CHECK(props.empty());
     }
 }
 

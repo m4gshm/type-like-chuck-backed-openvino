@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Manual client and E2E test suite for the tlc-ovgenai-runner.
 
 Stdlib-only, cross-platform (macOS/Linux/Windows).
@@ -25,8 +25,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_DIR = os.path.join(ROOT, "build")
 CACHE_DIR = os.path.join(ROOT, ".cache")
 
-DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int4-ov"
-DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov")
+DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov"
+DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")
+
+# Device for runner processes; resolved by select_device() unless set explicitly.
+RUNNER_DEVICE = "CPU"
+# Extra --prop KEY=VALUE arguments for every runner process (set via --prop).
+RUNNER_PROPS = []
 
 FIM_PROMPT = "<|fim_prefix|>def add(a, b):\n    <|fim_suffix|>\n    return a + b<|fim_middle|>"
 FIM_TOKENS = ("<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>")
@@ -45,20 +50,24 @@ def binary_path():
     else:
         p = os.path.join(BUILD_DIR, "tlc-ovgenai-runner-linux-x64")
     if not os.path.isfile(p):
-        fail(f"{p} not found — run `task -t tasks.yaml build` first")
+        fail(f"{p} not found вЂ” run `task -t tasks.yaml build` first")
     return p
 
 
 def library_env():
     """Replicate the library-path setup from tasks.yaml."""
     env = dict(os.environ)
+    env.setdefault("OPENVINO_NPUW_LOG_LEVEL", "INFO")  # show NPU compile progress
     ov = os.path.join(CACHE_DIR, "ov-genai")
     if sys.platform == "win32":
-        rt = os.path.join(ov, "windows", f"openvino_genai_windows_2026.4.0.0_x86_64", "runtime", "bin", "intel64", "Release")
-        env["PATH"] = rt + os.pathsep + env.get("PATH", "")
+        sub = "windows/openvino_genai_windows_2026.4.1.0_x86_64/runtime/bin"
+        env["PATH"] = os.pathsep.join([
+            os.path.join(ov, sub, "intel64", "Release"),
+            os.path.join(ov, sub, "..", "3rdparty", "tbb", "bin"),
+        ]) + os.pathsep + env.get("PATH", "")
     else:
-        sub = "mac/openvino_genai_macos_12_6_2026.4.1.0rc2_arm64" if sys.platform == "darwin" \
-            else "linux/openvino_genai_ubuntu24_2026.4.0.0_x86_64"
+        sub = "mac/openvino_genai_macos_12_6_2026.4.1.0_arm64" if sys.platform == "darwin" \
+            else "linux/openvino_genai_ubuntu24_2026.4.1.0_x86_64"
         lib = os.pathsep.join([
             os.path.join(ov, sub, "runtime", "lib", "intel64"),
             os.path.join(ov, sub, "runtime", "3rdparty", "tbb", "lib"),
@@ -71,14 +80,15 @@ def library_env():
 class Runner:
     """Spawned runner process; events are collected on a reader thread."""
 
-    def __init__(self, model=None, device="CPU"):
+    def __init__(self, model=None, device=None, props=None):
         self.binary = binary_path()
         args = [self.binary]
         if model:
-            args += ["--model", model, "--device", device]
+            args += ["--model", model, "--device", device or RUNNER_DEVICE]
+            args += [x for kv in (RUNNER_PROPS if props is None else props) for x in ("--prop", kv)]
         self.proc = subprocess.Popen(
             args, cwd=ROOT, env=library_env(),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
             text=True, encoding="utf-8", bufsize=1)
         self.events = []
         self.lines = []  # raw stdout lines, for non-JSON assertions
@@ -90,11 +100,24 @@ class Runner:
         for line in self.proc.stdout:
             self.lines.append(line.rstrip("\n"))
             try:
-                self.events.append(json.loads(line))
+                ev = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            self.events.append(ev)
+            if ev.get("type") == "done":
+                text = ""
+                for prev in reversed(self.events[:-1]):
+                    if prev.get("type") in ("done", "error"):
+                        break
+                    if prev.get("type") == "token":
+                        text = prev.get("text", "") + text
+                print(f"<< {ev} text={text!r}", file=sys.stderr)
+            elif ev.get("type") == "error":
+                print(f"<< {ev}", file=sys.stderr)
 
     def send(self, obj):
+        if obj.get("type") == "generate":
+            print(f">> {json.dumps(obj, ensure_ascii=False)}", file=sys.stderr)
         self.proc.stdin.write(json.dumps(obj) + "\n")
         self.proc.stdin.flush()
 
@@ -108,6 +131,13 @@ class Runner:
                 if pred(ev):
                     return ev
             if self.proc.poll() is not None:
+                # the child is gone but the reader thread may not have drained
+                # its stdout yet; give it a moment before declaring a timeout
+                self._thread.join(2.0)
+                for ev in self.events[seen:]:
+                    seen += 1
+                    if pred(ev):
+                        return ev
                 break
             time.sleep(0.02)
         raise AssertionError(f"timeout waiting for event (exit={self.proc.poll()}, events={self.events[seen:]})")
@@ -115,6 +145,10 @@ class Runner:
     def close(self, timeout=10):
         try:
             self.send({"type": "shutdown"})
+        except OSError:
+            pass
+        try:
+            self.proc.stdin.close()  # avoid noisy stdin flush at GC when the child is gone
         except OSError:
             pass
         try:
@@ -129,6 +163,41 @@ def check(cond, name):
     status = "ok" if cond else "FAIL"
     print(f"  [{status}] {name}")
     return cond
+
+
+def lastError(r):
+    """Message of the first error event (may be empty if the reader thread lost the race)."""
+    err = next((e.get("message", "") for e in r.events if e.get("type") == "error"), "")
+    return err.strip().replace("\n", " ")[:300] or "(no error event captured)"
+
+
+def select_device(model, requested, props=()):
+    """Resolve --device; 'auto' probes NPU, then GPU, then CPU against the model."""
+    global RUNNER_DEVICE, RUNNER_PROPS
+    RUNNER_PROPS = list(props)
+    if requested != "auto":
+        r = Runner(model=model, device=requested)
+        try:
+            expect_ready(r, model)
+        except Exception:
+            fail(f"runner cannot load the model on {requested}: {lastError(r)} "
+                 "(try --device auto or add OpenVINO properties with --prop)")
+        finally:
+            r.close()
+        RUNNER_DEVICE = requested
+        return
+    for cand in ("NPU", "GPU", "CPU"):
+        r = Runner(model=model, device=cand)
+        try:
+            expect_ready(r, model)
+            RUNNER_DEVICE = cand
+            print(f"device: using {cand}", flush=True)
+            return
+        except Exception:
+            print(f"device: {cand} unavailable: {lastError(r)}", flush=True)
+        finally:
+            r.close()
+    fail("no working device (tried NPU, GPU, CPU)")
 
 
 # ---------------------------------------------------------------- protocol tests (no model)
@@ -192,7 +261,10 @@ def test_stdout_ndjson_only():
 # ---------------------------------------------------------------- model tests
 
 def expect_ready(r, model):
-    ev = r.wait_for(lambda e: e.get("type") == "ready", timeout=300)
+    # First NPU load can compile the graph for many minutes; cold-cache NPU
+    # needs a much larger window than CPU/GPU (seconds).
+    ev = r.wait_for(lambda e: e.get("type") == "ready",
+                    timeout=int(os.environ.get("E2E_READY_TIMEOUT", "300")))
     return ev
 
 
@@ -200,7 +272,7 @@ def test_generation(model):
     print("model: streaming generation")
     r = Runner(model=model)
     ready = expect_ready(r, model)
-    ok = check(ready.get("device") == "CPU" and isinstance(ready.get("ctx"), int), f"ready event: {ready}")
+    ok = check(ready.get("device") == RUNNER_DEVICE and isinstance(ready.get("ctx"), int), f"ready event: {ready}")
     r.send({"type": "generate", "id": 1, "prompt": "The capital of France is", "maxTokens": 24})
     types = []
     done = r.wait_for(lambda e: e.get("type") == "done")
@@ -232,13 +304,15 @@ def test_stop_strings(model):
     print("model: stop strings")
     r = Runner(model=model)
     expect_ready(r, model)
-    # greedy decoding makes this deterministic: the model reliably emits ' six!!!…'
-    r.send({"type": "generate", "id": 3, "prompt": "count: one two three four five", "maxTokens": 64, "stop": ["!"]})
+    # greedy decoding is deterministic: the model counts on
+    # ' six seven eight ...' on every supported model/device, so stopping
+    # on 'seven' must cut generation right after ' six '.
+    r.send({"type": "generate", "id": 3, "prompt": "count: one two three four five", "maxTokens": 64, "stop": ["seven"]})
     done = r.wait_for(lambda e: e.get("type") == "done")
     tokens = [e for e in r.events if e.get("type") == "token"]
     text = "".join(t["text"] for t in tokens)
     ok = check(done.get("finishReason") == "stop", f"finishReason is stop (got {done.get('finishReason')})")
-    ok &= check("!" not in text, f"stop string not present in output: {text!r}")
+    ok &= check("seven" not in text, f"stop string not present in output: {text!r}")
     ok &= check(len(tokens) < 64, f"generation stopped early ({len(tokens)} tokens)")
     r.close()
     return ok
@@ -327,10 +401,11 @@ def download_model(out_dir, repo=DEFAULT_MODEL_REPO):
 
 # ---------------------------------------------------------------- manual client
 
-def manual_client(model):
+def manual_client(model, device="auto", props=()):
     if not model:
         fail("manual mode needs --model or MODEL_DIR")
-    print(f"interactive client — type a JSON request line, or /fim <code>, /quit")
+    select_device(model, device, props)
+    print(f"interactive client вЂ” type a JSON request line, or /fim <code>, /quit")
     r = Runner(model=model)
     ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=300)
     print(f"ready: model={ready.get('model')} device={ready.get('device')} ctx={ready.get('ctx')}")
@@ -373,7 +448,7 @@ def manual_client(model):
             try:
                 r.send(json.loads(line))
             except json.JSONDecodeError:
-                print("not JSON — ignored")
+                print("not JSON вЂ” ignored")
     except KeyboardInterrupt:
         pass
     code = r.close()
@@ -387,7 +462,7 @@ MODEL_TESTS = [test_unparsable_input, test_unknown_type_ignored, test_generation
                test_max_tokens, test_stop_strings, test_fim, test_cancel, test_busy]
 
 
-def run_suite(model):
+def run_suite(model, device="auto", props=()):
     ok = True
     print(f"== protocol tests (no model) ==")
     for t in PROTOCOL_TESTS:
@@ -396,7 +471,8 @@ def run_suite(model):
         if not (os.path.isfile(os.path.join(model, "openvino_model.xml")) or
                 any(f.endswith(".xml") and "tokenizer" in f for f in os.listdir(model))):
             fail(f"{model} does not look like an OpenVINO IR model directory")
-        print(f"== model tests ({model}) ==")
+        select_device(model, device, props)
+        print(f"== model tests ({model}, device={RUNNER_DEVICE}) ==")
         for t in MODEL_TESTS:
             ok &= t(model)
     else:
@@ -411,6 +487,9 @@ def main():
     for name in ("test", "manual"):
         p = cmd.add_parser(name)
         p.add_argument("--model", default=os.environ.get("MODEL_DIR"), help="OpenVINO IR model directory")
+        p.add_argument("--device", default="auto", help="NPU, GPU, CPU or auto (NPU -> GPU -> CPU)")
+        p.add_argument("--prop", action="append", default=[],
+                       help="runner OpenVINO property KEY=VALUE, repeatable")
     p = cmd.add_parser("download-model")
     p.add_argument("--repo", default=DEFAULT_MODEL_REPO)
     p.add_argument("--out", default=DEFAULT_MODEL_DIR)
@@ -420,9 +499,9 @@ def main():
         download_model(args.out, args.repo)
         print(f"model at {args.out}")
     elif args.cmd == "manual":
-        manual_client(args.model)
+        manual_client(args.model, args.device, args.prop)
     else:
-        run_suite(args.model)
+        run_suite(args.model, args.device, args.prop)
 
 
 if __name__ == "__main__":
