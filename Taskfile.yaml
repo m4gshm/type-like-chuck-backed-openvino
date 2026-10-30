@@ -7,11 +7,11 @@ vars:
   OV_PKG_VERSION: '2026.4.1.0'
   OV_CACHE_DIR: '.cache/ov-genai'
   BUILD_DIR: 'build'
-  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64.tar.gz'
-  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64.zip'
+  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64.tar.gz'
+  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64.zip'
   URL_MAC: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/pre-release/{{.OV_MAC_VERSION}}/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64.tar.gz'
-  DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_VERSION}}_x86_64'
-  DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_VERSION}}_x86_64'
+  DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64'
+  DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64'
   DIR_MAC: '{{.OV_CACHE_DIR}}/mac/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64'
   OV_DIR_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/cmake'
   OV_LIB_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
@@ -65,14 +65,19 @@ tasks:
       - '{{.DIR_WINDOWS}}/runtime/bin/**'
 
   download:
-    desc: Resumable download; retries on bad responses and HTML error pages
+    desc: Resumable download; retries on bad responses and HTML error pages (server answers 200 for missing keys)
     cmds:
       - |
         f='{{.FILE}}'
+        case "$f" in
+          *.zip) magic='504b' ;;   # PK, zip local header
+          *)     magic='1f8b' ;;   # gzip magic
+        esac
+        hex() { head -c 2 "$1" | od -An -tx1 | tr -d ' \n'; }
         for i in 1 2 3 4 5 6; do
-          [ -f "$f" ] && [ "$(head -c 4 "$f")" = "HTTP" ] && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && exit 0
-          echo "download attempt $i failed, resumingвЂ¦"; sleep 3
+          [ -f "$f" ] && [ "$(hex "$f")" != "$magic" ] && rm -f "$f"
+          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
+          echo "download attempt $i failed, resuming..."; sleep 3
         done
         exit 1
 
