@@ -11,7 +11,7 @@ x64; macOS is dev-only.
 - `src/runner.hpp` — pure, testable logic (arg/request parsing, finishReason); no I/O, no OpenVINO.
 - `src/tests.cpp` — unit tests (doctest), run via ctest.
 - `CMakeLists.txt` — single-target CMake build; expects `-DOpenVINO_DIR=<unpacked archive>/runtime/cmake`.
-- `tasks.yaml` — go-task build automation (runtime download, host builds, Linux-in-Docker, smoke).
+- `Taskfile.yaml` — go-task build automation (runtime download, host builds, smoke).
 - `.github/workflows/runner.yml` — CI build matrix + loader smoke test; `v*` tags publish a release.
 - `vendor/` — vendored headers (`nlohmann/json.hpp`).
 - `openspec/` — specs and the active change (`openspec/changes/openvino-genai-stdio-runner`).

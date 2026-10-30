@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/ov-genai
-          key: ov-genai-${{ hashFiles('tasks.yaml') }}
+          key: ov-genai-${{ hashFiles('Taskfile.yaml') }}
       - name: upload artifact
         uses: actions/upload-artifact@v5
         with:
@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/ov-genai
-          key: ov-genai-${{ hashFiles('tasks.yaml') }}-linux
+          key: ov-genai-${{ hashFiles('Taskfile.yaml') }}-linux
       - name: cache test model
         uses: actions/cache@v4
         with:

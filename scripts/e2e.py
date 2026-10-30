@@ -50,12 +50,12 @@ def binary_path():
     else:
         p = os.path.join(BUILD_DIR, "tlc-ovgenai-runner-linux-x64")
     if not os.path.isfile(p):
-        fail(f"{p} not found вЂ” run `task -t tasks.yaml build` first")
+        fail(f"{p} not found - run `task build` first")
     return p
 
 
 def library_env():
-    """Replicate the library-path setup from tasks.yaml."""
+    """Replicate the library-path setup from Taskfile.yaml."""
     env = dict(os.environ)
     env.setdefault("OPENVINO_NPUW_LOG_LEVEL", "INFO")  # show NPU compile progress
     ov = os.path.join(CACHE_DIR, "ov-genai")
@@ -373,7 +373,7 @@ def hf_api(repo):
 
 
 def fetch(url, dest):
-    """Resumable download via curl (same approach as tasks.yaml)."""
+    """Resumable download via curl (same approach as Taskfile.yaml)."""
     tmp = dest + ".part"
     if os.path.isfile(dest):
         print(f"  exists  {os.path.basename(dest)}")
