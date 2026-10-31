@@ -16,6 +16,11 @@ namespace {
 
 using json = nlohmann::json;
 
+// Byte-scan marker: the extension reads the runner binary for this prefix
+// (without loading runtime DLLs) to learn which OpenVINO GenAI runtime
+// version to download — a mismatched runtime crashes the process at load.
+constexpr char kRuntimeVersionMarker[] = "ovgenai-runtime-version: " TLC_OVGENAI_OV_VERSION;
+
 void emit(const json& event) {
     if (event.value("type", "") == "error") {
         std::cerr << "[runner] " << event.dump() << '\n';
@@ -121,6 +126,13 @@ private:
 
 int main(int argc, char** argv) {
     const runner::Options options = runner::parseArgs(argc, argv);
+    if (options.printVersion) {
+        // Strips the marker prefix: the value doubles as the byte-scan anchor.
+        emit(json{{"type", "version"},
+                  {"app", TLC_OVGENAI_APP_VERSION},
+                  {"ovGenai", std::string(kRuntimeVersionMarker).substr(sizeof("ovgenai-runtime-version: ") - 1)}});
+        return 0;
+    }
     if (options.modelPath.empty()) {
         emit(json{{"type", "error"}, {"id", nullptr}, {"message", "no --model given"}});
         return 2;

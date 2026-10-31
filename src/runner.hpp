@@ -18,6 +18,8 @@ struct Options {
     std::size_t contextLength = 0;
     // OpenVINO plugin properties from --prop KEY=VALUE, passed to the pipeline as-is.
     std::map<std::string, std::string> properties;
+    // --version: print the runtime version event and exit 0 (no model load).
+    bool printVersion = false;
 };
 
 inline Options parseArgs(int argc, char** argv) {
@@ -27,6 +29,8 @@ inline Options parseArgs(int argc, char** argv) {
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (arg == "--model") {
             options.modelPath = next();
+        } else if (arg == "--version") {
+            options.printVersion = true;
         } else if (arg == "--device") {
             options.device = next();
         } else if (arg == "--ctx") {

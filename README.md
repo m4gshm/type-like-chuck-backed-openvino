@@ -9,7 +9,10 @@ work for development only and are not a release target).
 ## Protocol
 
 Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...]`
-(`--device` defaults to GPU)
+(`--device` defaults to GPU). `tlc-ovgenai-runner --version` prints a
+`{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` event and exits 0 without loading a model.
+`app` is the runner's own version from git: an exact tag on HEAD (`v1.2.3`,
+`-dirty` for a modified tree), otherwise `<tag>-<N>-g<sha>+<branch>.<build-time>`.
 
 `--prop` passes OpenVINO plugin properties to the pipeline (repeatable); values are
 typed automatically: `true`/`false` → bool, integer → int64, otherwise string, e.g.
@@ -23,6 +26,7 @@ in `.cache/npu-blobs/` (relative to the working directory) so only the first sta
 compiles; override with `--prop CACHE_DIR=...`.
 
 Events on stdout (one JSON object per line):
+- `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` for `--version` (before any model load);
 - `{"type":"ready","model":...,"device":...,"ctx":N}` after the pipeline loads;
 - `{"type":"token","text":"..."}` per generated piece;
 - `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel"}`;

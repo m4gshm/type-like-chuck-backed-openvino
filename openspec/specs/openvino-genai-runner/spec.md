@@ -43,6 +43,13 @@ The runner SHALL locate the OpenVINO/TBB shared libraries next to its own binary
 - **WHEN** the runner binary is started with no arguments and the library path set
 - **THEN** it exits with code 2 and emits a `{"type":"error"}` event, proving the OpenVINO/TBB libraries resolve
 
+### Requirement: Runtime version handshake
+The runner binary SHALL embed the OpenVINO GenAI version it was built against as a byte-scan marker (`ovgenai-runtime-version: <version>`, set by the Taskfile from `OV_PKG_VERSION`) and SHALL support `--version`, which prints a `version` event carrying that value and exits 0 without loading a model. The extension uses the embedded version to download the matching runtime archive; builds without a marker (version `unknown`) make the extension fall back to its own pinned version.
+
+#### Scenario: Version request
+- **WHEN** the runner is started with `--version`
+- **THEN** it prints `{"type":"version","app":"<app-version>","ovGenai":"<version>"}` on stdout and exits 0 without loading a model; `app-version` is derived from git: the exact tag on HEAD (with `-dirty` for a modified tree), or `<last-tag>-<N>-g<sha>+<branch>.<build-time>` when built from a branch, or `unknown` outside a git repo
+
 ### Requirement: IR model inference contract
 The runner SHALL load an OpenVINO IR model (`.xml` + `.bin` pair, or a model directory containing it with tokenizer files) given by path, accept a prompt string, a max-token limit and stop strings per request, and generate a single completion honoring the stop strings. The context window SHALL respect the model's compiled context length.
 

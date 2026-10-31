@@ -90,7 +90,7 @@ tasks:
   build:posix:
     platforms: [linux, darwin]
     cmds:
-      - cmake -S . -B '{{.BUILD_DIR}}/{{OS}}' -DOpenVINO_DIR='{{.OV_DIR_POSIX}}' -DCMAKE_BUILD_TYPE=Release
+      - cmake -S . -B '{{.BUILD_DIR}}/{{OS}}' -DOpenVINO_DIR='{{.OV_DIR_POSIX}}' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
       - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
       - mkdir -p '{{.BUILD_DIR}}'
       - cp '{{.BUILD_DIR}}/{{OS}}/tlc-ovgenai-runner' '{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}'
@@ -104,7 +104,7 @@ tasks:
   build:windows:
     platforms: [windows]
     cmds:
-      - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.USER_WORKING_DIR}}\{{.DIR_WINDOWS}}\runtime\cmake' -DCMAKE_BUILD_TYPE=Release
+      - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.USER_WORKING_DIR}}\{{.DIR_WINDOWS}}\runtime\cmake' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
       - cmake --build '{{.BUILD_DIR}}\windows' --config Release
       - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe'"
     sources:
@@ -202,6 +202,16 @@ tasks:
         echo "$out"
         [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
         echo "$out" | grep -q '"type":"error"' || { echo "no error event in output" >&2; exit 1; }
+        out=$('{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
+        echo "$out"
+        case "$out" in
+          *'"type":"version"'*) ;;
+          *) echo "no version event in output: $out" >&2; exit 1 ;;
+        esac
+        case "$out" in
+          *'"ovGenai":"{{.OV_PKG_VERSION}}"'*) ;;
+          *) echo "unexpected ovGenai version (expected {{.OV_PKG_VERSION}}): $out" >&2; exit 1 ;;
+        esac
 
   smoke:loader:windows:
     platforms: [windows]
@@ -216,4 +226,14 @@ tasks:
         case "$out" in
           *'"type":"error"'*) ;;
           *) echo "no error event in output" >&2; exit 1 ;;
+        esac
+        out=$('{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
+        echo "$out"
+        case "$out" in
+          *'"type":"version"'*) ;;
+          *) echo "no version event in output: $out" >&2; exit 1 ;;
+        esac
+        case "$out" in
+          *'"ovGenai":"{{.OV_PKG_VERSION}}"'*) ;;
+          *) echo "unexpected ovGenai version (expected {{.OV_PKG_VERSION}}): $out" >&2; exit 1 ;;
         esac

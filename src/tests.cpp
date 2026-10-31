@@ -25,6 +25,12 @@ TEST_CASE("parseArgs") {
         CHECK(o.device == "GPU");
         CHECK(o.contextLength == 4096);
     }
+    SUBCASE("version flag") {
+        char* argv[] = {(char*)"prog", (char*)"--version"};
+        const auto o = parseArgs(2, argv);
+        CHECK(o.printVersion);
+        CHECK(o.modelPath.empty());
+    }
     SUBCASE("unknown args ignored") {
         char* argv[] = {(char*)"prog", (char*)"--wat", (char*)"--model", (char*)"/m"};
         const auto o = parseArgs(4, argv);
