@@ -62,9 +62,9 @@ Release-named binaries land in `build/`:
 `tlc-ovgenai-runner-win32-x64.exe`
 (Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
 
-CI (`.github/workflows/runner.yml`) builds all targets, runs a loader smoke
-test (the binary must start and report the missing-model error — this proves
-the OpenVINO/TBB libraries resolve), runs the e2e suite on Linux x64, uploads
-artifacts, and publishes all binaries as a GitHub release on `v*` tags
-(release is gated on e2e). The TLC plugin imports these binaries from the
-latest release (or a pinned `RUNNER_VERSION` tag) when packing its `.vsix`.
+## Releases
+
+Prebuilt binaries are published on
+[GitHub Releases](https://github.com/m4gshm/type-like-chuck-backed-openvino/releases)
+for every `v*` tag. The TLC plugin imports them from the latest release (or a
+pinned `RUNNER_VERSION` tag) when packing its `.vsix`.
