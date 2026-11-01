@@ -43,7 +43,8 @@ the queue answering every pending request with `finishReason:"cancel"`, cancels 
 active generation and exits). Logs go to stderr only. The runner queues generate
 requests and serves them one at a time in arrival order: `token` events carry no id
 (only one generation is active) and always belong to the request being processed;
-`done`/`error` events carry the request id.
+`done`/`error` events carry the request id. Exit codes: 0 = normal, 1 = model
+load failure, 2 = usage/loader error.
 
 ## Build
 
@@ -52,6 +53,7 @@ target platform (downloaded automatically into `.cache/ov-genai/`):
 
 ```sh
 task build   # download runtime + native build for the host OS → build/
+task test    # unit tests (doctest via ctest)
 task smoke   # NDJSON smoke run (MODEL_DIR=<int8-ov model directory>)
 ```
 
@@ -60,9 +62,9 @@ Release-named binaries land in `build/`:
 `tlc-ovgenai-runner-win32-x64.exe`
 (Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
 
-CI (`.github/workflows/runner.yml`) builds both platforms, runs a loader smoke
+CI (`.github/workflows/runner.yml`) builds all targets, runs a loader smoke
 test (the binary must start and report the missing-model error — this proves
-the OpenVINO/TBB libraries resolve), uploads artifacts, and publishes both
-binaries as a GitHub release on `v*` tags. The TLC plugin imports these
-binaries from the latest release (or a pinned `RUNNER_VERSION` tag) when
-packing its `.vsix`.
+the OpenVINO/TBB libraries resolve), runs the e2e suite on Linux x64, uploads
+artifacts, and publishes all binaries as a GitHub release on `v*` tags
+(release is gated on e2e). The TLC plugin imports these binaries from the
+latest release (or a pinned `RUNNER_VERSION` tag) when packing its `.vsix`.
