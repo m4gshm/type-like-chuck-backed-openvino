@@ -21,12 +21,32 @@ using json = nlohmann::json;
 // version to download — a mismatched runtime crashes the process at load.
 constexpr char kRuntimeVersionMarker[] = "ovgenai-runtime-version: " TLC_OVGENAI_OV_VERSION;
 
+// Protocol type names (contract: openspec/specs/openvino-genai-runner/spec.md).
+constexpr char kEventVersion[] = "version";
+constexpr char kEventReady[] = "ready";
+constexpr char kEventToken[] = "token";
+constexpr char kEventDone[] = "done";
+constexpr char kEventError[] = "error";
+constexpr char kRequestGenerate[] = "generate";
+constexpr char kRequestCancel[] = "cancel";
+constexpr char kRequestShutdown[] = "shutdown";
+
+// std::cout's buffer is swapped to stderr in main() so OpenVINO logs (which
+// share std::cout) cannot pollute the protocol stream; events keep using the
+// original stdout buffer captured here (static init runs before main).
+std::streambuf* const kEventBuf = std::cout.rdbuf();
+
+std::ostream& eventOut() {
+    static std::ostream stream{kEventBuf};
+    return stream;
+}
+
 void emit(const json& event) {
-    if (event.value("type", "") == "error") {
+    if (event.value("type", "") == kEventError) {
         std::cerr << "[runner] " << event.dump() << '\n';
     }
-    std::cout << event.dump() << '\n';
-    std::cout.flush();
+    eventOut() << event.dump() << '\n';
+    eventOut().flush();
 }
 
 struct GenerateRequest {
@@ -50,15 +70,15 @@ public:
             try {
                 message = json::parse(line);
             } catch (const std::exception&) {
-                emit(json{{"type", "error"}, {"id", nullptr}, {"message", "unparsable input line"}});
+                emit(json{{"type", kEventError}, {"id", nullptr}, {"message", "unparsable input line"}});
                 continue;
             }
             const std::string type = message.value("type", "");
-            if (type == "generate") {
+            if (type == kRequestGenerate) {
                 handleGenerate(message);
-            } else if (type == "cancel") {
+            } else if (type == kRequestCancel) {
                 cancelled_.store(true);
-            } else if (type == "shutdown") {
+            } else if (type == kRequestShutdown) {
                 break;
             }
         }
@@ -70,7 +90,7 @@ private:
         const runner::GenerateRequest request = runner::parseRequest(message);
 
         if (busy_.exchange(true)) {
-            emit(json{{"type", "error"}, {"id", request.id}, {"message", "busy"}});
+            emit(json{{"type", kEventError}, {"id", request.id}, {"message", "busy"}});
             return;
         }
         cancelled_.store(false);
@@ -94,17 +114,17 @@ private:
                         if (cancelled_.load()) {
                             return ov::genai::StreamingStatus::CANCEL;
                         }
-                        emit(json{{"type", "token"}, {"text", token}});
+                        emit(json{{"type", kEventToken}, {"text", token}});
                         return ov::genai::StreamingStatus::RUNNING;
                     });
                 const int nativeReason = results.finish_reasons.empty() ? 0
                     : static_cast<int>(results.finish_reasons.front());
                 const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
-                emit(json{{"type", "done"}, {"id", request.id}, {"finishReason", reason}});
+                emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}});
             } catch (const std::exception& e) {
-                emit(json{{"type", "error"}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
+                emit(json{{"type", kEventError}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
             } catch (...) {
-                emit(json{{"type", "error"}, {"id", request.id}, {"message", "generate failed: unknown exception"}});
+                emit(json{{"type", kEventError}, {"id", request.id}, {"message", "generate failed: unknown exception"}});
             }
             busy_.store(false);
         });
@@ -125,16 +145,19 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
+    // OpenVINO logs (e.g. colored [INFO] lines during NPU compilation) go to
+    // stdout, but the protocol reserves stdout for NDJSON events only.
+    std::cout.rdbuf(std::cerr.rdbuf());
     const runner::Options options = runner::parseArgs(argc, argv);
     if (options.printVersion) {
         // Strips the marker prefix: the value doubles as the byte-scan anchor.
-        emit(json{{"type", "version"},
+        emit(json{{"type", kEventVersion},
                   {"app", TLC_OVGENAI_APP_VERSION},
                   {"ovGenai", std::string(kRuntimeVersionMarker).substr(sizeof("ovgenai-runtime-version: ") - 1)}});
         return 0;
     }
     if (options.modelPath.empty()) {
-        emit(json{{"type", "error"}, {"id", nullptr}, {"message", "no --model given"}});
+        emit(json{{"type", kEventError}, {"id", nullptr}, {"message", "no --model given"}});
         return 2;
     }
 
@@ -163,11 +186,11 @@ int main(int argc, char** argv) {
         }
         pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer, options.device, props);
     } catch (const std::exception& e) {
-        emit(json{{"type", "error"}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
+        emit(json{{"type", kEventError}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
         return 1;
     }
 
-    emit(json{{"type", "ready"},
+    emit(json{{"type", kEventReady},
               {"model", options.modelPath},
               {"device", options.device},
               {"ctx", options.contextLength}});
