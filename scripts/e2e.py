@@ -33,15 +33,21 @@ CACHE_DIR = os.path.join(ROOT, ".cache")
 DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov"
 DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")
 
-# Bench models: Qwen2.5-Coder in int8 (upstream) and nf4 AWQ (m4gshm HF),
-# three sizes each — quantization effect on compile time vs inference speed.
+# Bench models: Qwen2.5-Coder in int8/int4 (upstream OpenVINO) and nf4 AWQ
+# (m4gshm HF), three sizes each — quantization effect on compile vs inference.
 BENCH_MODELS = [
-    ("0.5B", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov",
+    ("0.5B-int8", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov",
      os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")),
-    ("1.5B", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int8-ov",
+    ("1.5B-int8", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int8-ov",
      os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov")),
-    ("3B", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int8-ov",
+    ("3B-int8", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int8-ov",
      os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov")),
+    ("0.5B-int4", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int4-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov")),
+    ("1.5B-int4", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int4-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-ov")),
+    ("3B-int4", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int4-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-ov")),
     ("0.5B-nf4", "m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq",
      os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov")),
     ("1.5B-nf4", "m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq",
@@ -51,7 +57,6 @@ BENCH_MODELS = [
 ]
 BENCH_MAX_TOKENS = 64
 BENCH_RUNS = 2
-BENCH_READY_TIMEOUT = 1800  # first NPU compile of the 3B model can take minutes
 
 # Device for runner processes; resolved by select_device() unless set explicitly.
 RUNNER_DEVICE = "CPU"
@@ -147,10 +152,11 @@ class Runner:
         self.proc.stdin.flush()
 
     def wait_for(self, pred, timeout=120, since=0):
-        """Block until an event matching pred appears after index `since`; returns it."""
-        deadline = time.monotonic() + timeout
+        """Block until an event matching pred appears after index `since`; returns it.
+        timeout=None waits forever (first NPU compile of a big model can take an hour)."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         seen = since
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             for ev in self.events[seen:]:
                 seen += 1
                 if pred(ev):
@@ -374,18 +380,40 @@ def test_cancel(model):
     return ok
 
 
-def test_busy(model):
-    print("model: busy rejection")
+def test_queue(model):
+    print("model: request queue (no busy, cancel by id, shutdown drain)")
     r = Runner(model=model)
     expect_ready(r, model)
-    r.send({"type": "generate", "id": 6, "prompt": "long story", "maxTokens": 1024})
-    r.wait_for(lambda e: e.get("type") == "token", timeout=120)
+    # two generates back to back: the runner queues them, no busy rejection
+    r.send({"type": "generate", "id": 6, "prompt": "tell me a story", "maxTokens": 64})
     r.send({"type": "generate", "id": 7, "prompt": "another"})
-    ev = r.wait_for(lambda e: e.get("type") == "error", timeout=30)
-    ok = check(ev.get("message") == "busy" and ev.get("id") == 7, f"busy error for id 7 (got {ev})")
-    r.send({"type": "cancel", "id": 6})
-    r.wait_for(lambda e: e.get("type") == "done", timeout=60)
-    r.close()
+    ok = check(r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 6, timeout=300).get("finishReason") in ("stop", "length"),
+               "id 6 completed first (queue order)")
+    ok &= check(r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 7, timeout=300) is not None,
+                "id 7 completed after id 6 (queued, no busy error)")
+    ok &= check(not any(e.get("type") == "error" for e in r.events), "no error events (busy removed)")
+    # cancel a queued request: resolved immediately with finishReason=cancel
+    r.send({"type": "generate", "id": 8, "prompt": "tell me a very long story", "maxTokens": 1024})
+    r.wait_for(lambda e: e.get("type") == "token", timeout=120)
+    r.send({"type": "generate", "id": 9, "prompt": "queued"})
+    r.send({"type": "cancel", "id": 9})
+    ev = r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 9, timeout=30)
+    ok &= check(ev.get("finishReason") == "cancel", f"queued id 9 cancelled (got {ev})")
+    # cancel the active generation
+    r.send({"type": "cancel", "id": 8})
+    ev = r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 8, timeout=60)
+    ok &= check(ev.get("finishReason") == "cancel", f"active id 8 cancelled (got {ev})")
+    # shutdown drains queued requests with finishReason=cancel
+    r.send({"type": "generate", "id": 10, "prompt": "tell me a very long story", "maxTokens": 1024})
+    r.wait_for(lambda e: e.get("type") == "token", timeout=120)
+    r.send({"type": "generate", "id": 11, "prompt": "queued"})
+    r.send({"type": "shutdown"})
+    ev = r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 11, timeout=30)
+    ok &= check(ev.get("finishReason") == "cancel", f"shutdown drained id 11 with cancel (got {ev})")
+    ok &= check(r.wait_for(lambda e: e.get("type") == "done" and e.get("id") == 10, timeout=60).get("finishReason") == "cancel",
+               "shutdown cancelled the active id 10")
+    code = r.proc.wait(timeout=60)
+    ok &= check(code == 0, f"clean shutdown, exit 0 (got {code})")
     return ok
 
 
@@ -443,7 +471,7 @@ def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         print(f"bench: {name} on {device}", flush=True)
         r = Runner(model=out, device=device, props=run_props)
         t0 = time.monotonic()
-        r.wait_for(lambda e: e.get("type") == "ready", timeout=BENCH_READY_TIMEOUT)
+        r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
         compile_s = time.monotonic() - t0
         gens = []
         for i in range(runs):
@@ -563,7 +591,7 @@ def manual_client(model, device="auto", props=()):
 
 PROTOCOL_TESTS = [test_no_model, test_bad_model, test_stdout_ndjson_only]
 MODEL_TESTS = [test_unparsable_input, test_unknown_type_ignored, test_generation,
-               test_max_tokens, test_stop_strings, test_fim, test_cancel, test_busy]
+               test_max_tokens, test_stop_strings, test_fim, test_cancel, test_queue]
 
 
 def run_suite(model, device="auto", props=()):
@@ -604,8 +632,8 @@ def main():
     p.add_argument("--runs", type=int, default=BENCH_RUNS, help="generation runs per model (steady state is reported)")
     p.add_argument("--cold", action="store_true",
                    help="clear the NPU compiled-blob cache (.cache/npu-blobs) before each model")
-    p.add_argument("--sizes", default="0.5B,1.5B,3B,0.5B-nf4,1.5B-nf4,3B-nf4",
-                   help="comma-separated model sizes to bench (model dirs: E2E_0_5B_DIR / E2E_1_5B_DIR / E2E_3B_DIR / E2E_0_5B_nf4_DIR / E2E_1_5B_nf4_DIR / E2E_3B_nf4_DIR)")
+    p.add_argument("--sizes", default="0.5B-int8,1.5B-int8,3B-int8,0.5B-int4,1.5B-int4,3B-int4,0.5B-nf4,1.5B-nf4,3B-nf4",
+                   help="comma-separated model sizes to bench (model dirs: E2E_0_5B_int8_DIR / E2E_1_5B_int8_DIR / E2E_3B_int8_DIR / E2E_0_5B_int4_DIR / E2E_1_5B_int4_DIR / E2E_3B_int4_DIR / E2E_0_5B_nf4_DIR / E2E_1_5B_nf4_DIR / E2E_3B_nf4_DIR)")
     args = ap.parse_args()
 
     if args.cmd == "download-model":

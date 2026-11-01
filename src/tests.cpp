@@ -69,6 +69,13 @@ TEST_CASE("parseArgs") {
         const auto props = runner::effectiveProperties({}, 4096, false);
         CHECK(props.empty());
     }
+    SUBCASE("empty user prop value removes the key, e.g. CACHE_DIR= runs without a blob cache") {
+        char* argv[] = {(char*)"prog", (char*)"--device", (char*)"NPU",
+                        (char*)"--prop", (char*)"CACHE_DIR="};
+        const auto props = runner::effectiveProperties(parseArgs(5, argv).properties, 0, true);
+        CHECK(props.find("CACHE_DIR") == props.end());
+        CHECK(props.find("NPU_TURBO") != props.end());
+    }
 }
 
 TEST_CASE("parseRequest") {

@@ -15,4 +15,4 @@
 ## 3. Build automation and CI
 
 - [x] 3.1 `tasks.yaml`: runtime download (resumable, proxy-robust), native host build, Docker Linux x64 build, smoke task; release-named outputs in `build/` (artifact: `tasks.yaml`; verified by mac + docker linux builds)
-- [ ] 3.2 CI workflow building the runner for windows-latest and ubuntu-latest with a loader smoke test, uploading artifacts; `v*` tags publish a GitHub release with both binaries; verify the first tag run produces a release importable by the plugin (artifact: `.github/workflows/runner.yml` + first `v*` release; verified by green run with both release assets)
+- [x] 3.2 CI workflow building the runner for windows-latest and ubuntu-latest with a loader smoke test, uploading artifacts; `v*` tags publish a GitHub release with both binaries; verify the first tag run produces a release importable by the plugin (artifact: `.github/workflows/runner.yml` + first `v*` release; verified by green run with both release assets)

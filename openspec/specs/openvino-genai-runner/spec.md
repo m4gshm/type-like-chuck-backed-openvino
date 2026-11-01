@@ -28,13 +28,22 @@ The runner SHALL read one completion request per stdin line as a JSON object and
 - **WHEN** the runner logs diagnostics during generation
 - **THEN** the log lines appear on stderr and stdout remains valid NDJSON
 
-#### Scenario: Sequential requests
+#### Scenario: Queued requests
 - **WHEN** a `generate` request arrives while a generation is in progress
-- **THEN** the runner emits an `error` event (`busy`) and the running generation is unaffected
+- **THEN** the runner queues it and processes requests strictly in arrival order, each ending with a `done` or `error` event carrying its request `id`
+- **AND** `token` events carry no id (only one generation is ever active), so they always belong to the currently processed request
 
-#### Scenario: Cancel
-- **WHEN** a `cancel` request arrives mid-generation
+#### Scenario: Cancel by request id
+- **WHEN** a `cancel` request with an integer `id` arrives and that request is queued
+- **THEN** the runner removes it from the queue and emits a `done` event with `finishReason:"cancel"` for that id immediately
+- **WHEN** the cancelled request is the one currently generating
 - **THEN** generation stops and a `done` event with `finishReason:"cancel"` follows
+- **WHEN** a `cancel` request without an id arrives
+- **THEN** the runner cancels the currently active generation
+
+#### Scenario: Shutdown drains the queue
+- **WHEN** a `shutdown` request arrives while requests are still queued
+- **THEN** every queued request is answered with a `done` event with `finishReason:"cancel"`, the active generation stops with `finishReason:"cancel"`, and the runner exits
 
 ### Requirement: Runtime library resolution
 The runner SHALL locate the OpenVINO/TBB shared libraries next to its own binary or via the platform library path the extension prepends before spawning (`PATH` on Windows, `LD_LIBRARY_PATH` on Linux).

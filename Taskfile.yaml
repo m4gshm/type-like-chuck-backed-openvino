@@ -200,7 +200,7 @@ tasks:
       - python3 scripts/e2e.py test
 
   e2e:bench:
-    desc: 'Compile time + inference speed for 0.5B/1.5B/3B int8+nf4 (E2E_DEVICE, E2E_SIZES="0.5B,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
+    desc: 'Compile time + inference speed for 0.5B/1.5B/3B int8+int4+nf4 (E2E_DEVICE, E2E_SIZES="0.5B-int8,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
     deps: [build]
     cmds:
       - python3 scripts/e2e.py bench --device '{{.E2E_DEVICE | default "NPU"}}' {{.E2E_PROPS}} {{if .E2E_COLD}}--cold{{end}} {{if .E2E_SIZES}}--sizes '{{.E2E_SIZES}}'{{end}}

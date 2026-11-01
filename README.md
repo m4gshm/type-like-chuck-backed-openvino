@@ -18,12 +18,14 @@ Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [-
 typed automatically: `true`/`false` → bool, integer → int64, otherwise string, e.g.
 `--prop NPUW_LLM_MAX_PROMPT_LEN=2048 --prop CACHE_DIR=C:\tmp\ovcache`.
 
-On NPU the runner applies tuned defaults (`NPU_TURBO=YES`, `NPU_COMPILER_TYPE=PLUGIN`,
+On NPU the runner applies tuned defaults (`NPU_TURBO=NO`, `NPU_COMPILER_TYPE=PLUGIN`,
 `NPUW_LLM_GENERATE_HINT=BEST_PERF`, dynamic prefill with chunk 256 and pyramid
 attention, `NPUW_DEVICES=NPU,GPU` fallback, …); `--prop` overrides win, and `--ctx N`
 maps to `MAX_PROMPT_LEN` (compiled NPU graph window). Compiled NPU blobs are cached
 in `.cache/npu-blobs/` (relative to the working directory) so only the first start
-compiles; override with `--prop CACHE_DIR=...`.
+compiles; override with `--prop CACHE_DIR=...`, or run with no blob cache via
+`--prop CACHE_DIR=` (empty value removes the property — for users without write
+access to the cache location; every start then recompiles).
 
 Events on stdout (one JSON object per line):
 - `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` for `--version` (before any model load);
@@ -32,10 +34,15 @@ Events on stdout (one JSON object per line):
 - `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel"}`;
 - `{"type":"error","id":N|null,"message":"..."}`.
 
-Requests on stdin: `{"type":"generate","id":N,"prompt":"...","maxTokens":N,"stop":[...]}`
-and `{"type":"cancel","id":N}`. Logs go to stderr only. One generation at a
-time; a request arriving mid-generation is rejected with an `error` event
-(`busy`).
+Requests on stdin: `{"type":"generate","id":N,"prompt":"...","maxTokens":N,"stop":[...]}`,
+`{"type":"cancel","id":N}` (cancels the active generation, or a queued one by id —
+the cancelled queued request is answered immediately with
+`{"type":"done","id":N,"finishReason":"cancel"}`), and `{"type":"shutdown"}` (drains
+the queue answering every pending request with `finishReason:"cancel"`, cancels the
+active generation and exits). Logs go to stderr only. The runner queues generate
+requests and serves them one at a time in arrival order: `token` events carry no id
+(only one generation is active) and always belong to the request being processed;
+`done`/`error` events carry the request id.
 
 ## Build
 

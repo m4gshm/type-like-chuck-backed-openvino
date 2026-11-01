@@ -74,13 +74,13 @@ inline std::string finishReason(bool cancelled, int nativeReason) {
 }
 
 // NPU property defaults tuned for LLM latency/throughput (mirrors the proven
-// agent NPU config: turbo, plugin compiler, dynamic prefill, pyramid attention,
+// agent NPU config: plugin compiler, dynamic prefill, pyramid attention,
 // NPU->GPU fallback). --prop values win over these.
 inline std::map<std::string, std::string> npuDefaults() {
     return {
         {"PERFORMANCE_HINT", "LATENCY"},
         {"NPU_USE_NPUW", "YES"},
-        {"NPU_TURBO", "YES"},
+        {"NPU_TURBO", "NO"},
         {"NPU_COMPILER_TYPE", "PLUGIN"},
         {"NPUW_LLM_GENERATE_HINT", "BEST_PERF"},
         {"NPUW_LLM_PREFILL_HINT", "DYNAMIC"},
@@ -93,7 +93,8 @@ inline std::map<std::string, std::string> npuDefaults() {
         {"NPUW_PARALLEL_COMPILE", "YES"},
         {"NPUW_DEVICES", "NPU,GPU"},
         {"LOG_LEVEL", "LOG_INFO"}, // OpenVINO log level: shows NPU compile progress on stderr
-        // Compiled-blob cache relative to the runner cwd; override with --prop CACHE_DIR=...
+        // Compiled-blob cache relative to the runner cwd; --prop CACHE_DIR=path overrides,
+        // CACHE_DIR= (empty) removes it and runs with no blob cache.
         {"CACHE_DIR", ".cache/npu-blobs"},
     };
 }
@@ -106,6 +107,14 @@ inline std::map<std::string, std::string> effectiveProperties(
         }
         if (contextLength > 0) {
             user.emplace("MAX_PROMPT_LEN", std::to_string(contextLength));
+        }
+    }
+    for (auto it = user.begin(); it != user.end();) {
+        // `--prop KEY=` (empty value) removes KEY, e.g. CACHE_DIR= runs without a blob cache.
+        if (it->second.empty()) {
+            it = user.erase(it);
+        } else {
+            ++it;
         }
     }
     return user;

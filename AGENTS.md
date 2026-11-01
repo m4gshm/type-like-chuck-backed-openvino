@@ -28,7 +28,7 @@ task build    # runtime + native build for the host OS → build/
 task test
 task e2e:protocol
 task e2e
-task e2e:bench   # compile time + inference speed for 0.5B/1.5B/3B, int8 + nf4 (downloads models)
+task e2e:bench   # compile time + inference speed for 0.5B/1.5B/3B, int8 + int4 + nf4 (downloads models)
 python3 scripts/e2e.py manual --model <dir>  # interactive NDJSON client (/fim helper, /quit)
 ```
 
@@ -55,8 +55,9 @@ commands with `&&`.
   names, fields, or exit codes must update both.
 - stdout carries NDJSON events only; all logs go to stderr.
 - Exit codes: 2 = usage/loader error, 1 = model load failure, 0 = normal.
-- One generation at a time; mid-generation `generate` is rejected with a
-  `busy` error; `cancel` stops and emits `finishReason:"cancel"`.
+- Generate requests are queued and served one at a time in arrival order;
+  `cancel` (with or without `id`) stops the active or queued request and emits
+  `finishReason:"cancel"`; `shutdown` drains the queue and exits.
 - Binaries in `build/` use release-asset names (`tlc-ovgenai-runner-linux-x64`,
   `tlc-ovgenai-runner-win32-x64.exe`); the TLC plugin imports them as-is.
 - Keep testable logic in `src/runner.hpp` pure (no I/O, no OpenVINO types); unit
