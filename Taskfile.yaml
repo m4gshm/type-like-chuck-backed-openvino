@@ -118,6 +118,14 @@ tasks:
         | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{.RUNNER_POSIX}}{{end}} \
         --model "${MODEL_DIR:?set MODEL_DIR to an int8-ov model directory}" --device CPU
 
+  fmt:
+    desc: Reformat src with clang-format (.clang-format; the binary VS Code cpptools uses)
+    cmds:
+      - |
+        if command -v clang-format >/dev/null 2>&1; then CF=clang-format
+        else CF="$(ls "$USERPROFILE"/.vscode/extensions/ms-vscode.cpptools-*/LLVM/bin/clang-format.exe | tail -1)"; fi
+        "$CF" -i --style=file src/*.cpp src/*.hpp
+
   clean:
     desc: Remove build artifacts and the downloaded OpenVINO runtime cache
     cmds:

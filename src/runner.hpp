@@ -99,8 +99,8 @@ inline std::map<std::string, std::string> npuDefaults() {
     };
 }
 
-inline std::map<std::string, std::string> effectiveProperties(
-        std::map<std::string, std::string> user, std::size_t contextLength, bool npu) {
+inline std::map<std::string, std::string>
+effectiveProperties(std::map<std::string, std::string> user, std::size_t contextLength, bool npu) {
     if (npu) {
         for (const auto& [key, value] : npuDefaults()) {
             user.emplace(key, value);
@@ -120,4 +120,4 @@ inline std::map<std::string, std::string> effectiveProperties(
     return user;
 }
 
-}  // namespace runner
+} // namespace runner
