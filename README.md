@@ -66,5 +66,6 @@ Release-named binaries land in `build/`:
 
 Prebuilt binaries are published on
 [GitHub Releases](https://github.com/m4gshm/type-like-chuck-backed-openvino/releases)
-for every `v*` tag. The TLC plugin imports them from the latest release (or a
-pinned `RUNNER_VERSION` tag) when packing its `.vsix`.
+for every `v*` tag. The TLC plugin pins the release tag it imports when
+packing its `.vsix` — a plugin build always pairs with the runner release it
+was developed against (`RUNNER_VERSION` overrides for testing newer builds).
