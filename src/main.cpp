@@ -83,9 +83,8 @@ void emit(const json& event) {
 }
 
 class Runner {
-  public:
-    explicit Runner(std::unique_ptr<ov::genai::LLMPipeline> pipeline)
-        : pipeline_(std::move(pipeline)) {}
+public:
+    explicit Runner(std::unique_ptr<ov::genai::LLMPipeline> pipeline) : pipeline_(std::move(pipeline)) {}
 
     void run() {
         worker_ = std::thread([this] { processQueue(); });
@@ -98,8 +97,7 @@ class Runner {
             try {
                 message = json::parse(line);
             } catch (const std::exception&) {
-                emit(json{
-                    {"type", kEventError}, {"id", nullptr}, {"message", "unparsable input line"}});
+                emit(json{{"type", kEventError}, {"id", nullptr}, {"message", "unparsable input line"}});
                 continue;
             }
             const std::string type = message.value("type", "");
@@ -118,11 +116,10 @@ class Runner {
         }
     }
 
-  private:
+private:
     void enqueue(const runner::GenerateRequest& request) {
-        std::cerr << "[runner] generate id=" << request.id
-                  << " promptChars=" << request.prompt.size() << " maxTokens=" << request.maxTokens
-                  << " stops=" << request.stop.size() << '\n';
+        std::cerr << "[runner] generate id=" << request.id << " promptChars=" << request.prompt.size()
+                  << " maxTokens=" << request.maxTokens << " stops=" << request.stop.size() << '\n';
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queue_.push_back(request);
@@ -143,17 +140,15 @@ class Runner {
                 cancelled_.store(true);
                 return;
             }
-            const auto it =
-                std::find_if(queue_.begin(), queue_.end(),
-                             [id](const runner::GenerateRequest& r) { return r.id == id; });
+            const auto it = std::find_if(queue_.begin(), queue_.end(),
+                [id](const runner::GenerateRequest& r) { return r.id == id; });
             if (it != queue_.end()) {
                 queue_.erase(it);
                 removed = true;
             }
         }
         if (removed) {
-            emit(json{
-                {"type", kEventDone}, {"id", id}, {"finishReason", runner::finishReason(true, 0)}});
+            emit(json{{"type", kEventDone}, {"id", id}, {"finishReason", runner::finishReason(true, 0)}});
         }
     }
 
@@ -163,13 +158,12 @@ class Runner {
             std::lock_guard<std::mutex> lock(mutex_);
             shutdown_ = true;
             std::transform(queue_.begin(), queue_.end(), std::back_inserter(dropped),
-                           [](const runner::GenerateRequest& r) { return r.id; });
+                [](const runner::GenerateRequest& r) { return r.id; });
             queue_.clear();
             cancelled_.store(true);
         }
         for (const long long id : dropped) {
-            emit(json{
-                {"type", kEventDone}, {"id", id}, {"finishReason", runner::finishReason(true, 0)}});
+            emit(json{{"type", kEventDone}, {"id", id}, {"finishReason", runner::finishReason(true, 0)}});
         }
         cv_.notify_all();
     }
@@ -205,7 +199,9 @@ class Runner {
         std::size_t tokens = 0;
         try {
             const ov::genai::DecodedResults results = pipeline_->generate(
-                request.prompt, config, [this, &tokens](const std::string& token) {
+                request.prompt,
+                config,
+                [this, &tokens](const std::string& token) {
                     if (cancelled_.load()) {
                         return ov::genai::StreamingStatus::CANCEL;
                     }
@@ -213,25 +209,17 @@ class Runner {
                     emit(json{{"type", kEventToken}, {"text", token}});
                     return ov::genai::StreamingStatus::RUNNING;
                 });
-            const int nativeReason = results.finish_reasons.empty()
-                                         ? 0
-                                         : static_cast<int>(results.finish_reasons.front());
+            const int nativeReason = results.finish_reasons.empty() ? 0
+                : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens
-                      << " finish=" << reason << '\n';
+            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
             emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}});
         } catch (const std::exception& e) {
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens
-                      << " finish=error\n";
-            emit(json{{"type", kEventError},
-                      {"id", request.id},
-                      {"message", std::string("generate failed: ") + e.what()}});
+            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
+            emit(json{{"type", kEventError}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
         } catch (...) {
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens
-                      << " finish=error\n";
-            emit(json{{"type", kEventError},
-                      {"id", request.id},
-                      {"message", "generate failed: unknown exception"}});
+            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
+            emit(json{{"type", kEventError}, {"id", request.id}, {"message", "generate failed: unknown exception"}});
         }
     }
 
@@ -246,7 +234,7 @@ class Runner {
     bool active_ = false;
 };
 
-} // namespace
+}  // namespace
 
 int main(int argc, char** argv) {
     // Must run before any OpenVINO code can log (see openEventStream).
@@ -254,11 +242,9 @@ int main(int argc, char** argv) {
     const runner::Options options = runner::parseArgs(argc, argv);
     if (options.printVersion) {
         // Strips the marker prefix: the value doubles as the byte-scan anchor.
-        emit(json{
-            {"type", kEventVersion},
-            {"app", TLC_OVGENAI_APP_VERSION},
-            {"ovGenai",
-             std::string(kRuntimeVersionMarker).substr(sizeof("ovgenai-runtime-version: ") - 1)}});
+        emit(json{{"type", kEventVersion},
+                  {"app", TLC_OVGENAI_APP_VERSION},
+                  {"ovGenai", std::string(kRuntimeVersionMarker).substr(sizeof("ovgenai-runtime-version: ") - 1)}});
         return 0;
     }
     if (options.modelPath.empty()) {
@@ -284,17 +270,14 @@ int main(int argc, char** argv) {
             return raw;
         };
         ov::AnyMap props;
-        for (const auto& [key, raw] :
-             runner::effectiveProperties(options.properties, options.contextLength,
-                                         options.device.find("NPU") != std::string::npos)) {
+        for (const auto& [key, raw] : runner::effectiveProperties(
+                 options.properties, options.contextLength,
+                 options.device.find("NPU") != std::string::npos)) {
             props.emplace(key, typed(raw));
         }
-        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer,
-                                                            options.device, props);
+        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer, options.device, props);
     } catch (const std::exception& e) {
-        emit(json{{"type", kEventError},
-                  {"id", nullptr},
-                  {"message", std::string("load failed: ") + e.what()}});
+        emit(json{{"type", kEventError}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
         return 1;
     }
 

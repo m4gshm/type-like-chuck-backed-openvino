@@ -1,0 +1,7 @@
+{
+  "[cpp]": {
+    "editor.formatOnSave": false,
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "C_Cpp.formatting": "disabled"
+}
