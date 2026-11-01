@@ -87,6 +87,7 @@ tasks:
       - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
       - mkdir -p '{{.BUILD_DIR}}'
       - cp '{{.BUILD_DIR}}/{{OS}}/tlc-ovgenai-runner' '{{.BUILD_DIR}}/{{.RUNNER_POSIX}}'
+      - cp '{{.BUILD_DIR}}/{{OS}}/compile_commands.json' '.vscode/compile_commands.json'
     sources:
       - src/**/*
       - CMakeLists.txt
@@ -100,6 +101,7 @@ tasks:
       - cmake --build '{{.BUILD_DIR}}\windows' --config Release
       # The fresh exe is briefly locked by AV scanning; retry the copy.
       - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; 1..5 | ForEach-Object { Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe' -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }; if (-not (Test-Path '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe')) { exit 1 }"
+      - powershell -Command "if (Test-Path '{{.BUILD_DIR}}\windows\compile_commands.json') { Copy-Item '{{.BUILD_DIR}}\windows\compile_commands.json' '.vscode\compile_commands.json' -Force }"
     sources:
       - src/**/*
       - CMakeLists.txt

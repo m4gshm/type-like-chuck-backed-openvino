@@ -4,4 +4,5 @@ build/
 __pycache__/
 logs/
 node_modules
+.vscode/compile_commands.json
 
