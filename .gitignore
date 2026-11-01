@@ -1,3 +1,6 @@
 build/
 .cache/
 .task/
+__pycache__/
+run*.txt
+ol3*.txt

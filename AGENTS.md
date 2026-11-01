@@ -28,6 +28,7 @@ task build    # runtime + native build for the host OS → build/
 task test
 task e2e:protocol
 task e2e
+task e2e:bench   # compile time + inference speed for 0.5B/1.5B/3B, int8 + nf4 (downloads models)
 python3 scripts/e2e.py manual --model <dir>  # interactive NDJSON client (/fim helper, /quit)
 ```
 
@@ -46,6 +47,9 @@ commands with `&&`.
   editing code, delete nearby comments that became redundant. Tests follow the
   same rule: assertion names and structure should make the intent clear
   without commentary.
+- Shared string values that cross a boundary (NDJSON event and request type
+  names) are named constants (`kEvent*`/`kRequest*` in `main.cpp`), not
+  inline literals at each use site.
 - Protocol is a contract: request/event schemas are specified in
   `openspec/specs/openvino-genai-runner/spec.md` and README. Changes to event
   names, fields, or exit codes must update both.

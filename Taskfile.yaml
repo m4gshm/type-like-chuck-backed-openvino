@@ -106,7 +106,8 @@ tasks:
     cmds:
       - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.USER_WORKING_DIR}}\{{.DIR_WINDOWS}}\runtime\cmake' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
       - cmake --build '{{.BUILD_DIR}}\windows' --config Release
-      - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe'"
+      # The fresh exe is briefly locked by AV scanning; retry the copy.
+      - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; 1..5 | ForEach-Object { Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe' -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }; if (-not (Test-Path '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe')) { exit 1 }"
     sources:
       - src/**/*
       - CMakeLists.txt
@@ -163,10 +164,22 @@ tasks:
       - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
 
   e2e:npu:
-    desc: 'Full E2E suite on NPU only (long ready timeout: first load compiles the graph)'
+    desc: 'Full E2E suite on NPU over the nf4 models (long ready timeout: first load compiles the graph)'
+    deps: [models:nf4]
     cmds:
       - task: e2e
-        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800' }
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-1.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-3b-nf4-ov' }
+
+  models:nf4:
+    desc: Download the nf4 e2e models into .cache (m4gshm HF)
+    cmds:
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-0.5b-nf4-ov
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-1.5b-nf4-ov
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-3b-nf4-ov
 
   e2e:gpu:
     desc: Full E2E suite on GPU only
@@ -185,6 +198,12 @@ tasks:
     deps: [build]
     cmds:
       - python3 scripts/e2e.py test
+
+  e2e:bench:
+    desc: 'Compile time + inference speed for 0.5B/1.5B/3B int8+nf4 (E2E_DEVICE, E2E_SIZES="0.5B,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
+    deps: [build]
+    cmds:
+      - python3 scripts/e2e.py bench --device '{{.E2E_DEVICE | default "NPU"}}' {{.E2E_PROPS}} {{if .E2E_COLD}}--cold{{end}} {{if .E2E_SIZES}}--sizes '{{.E2E_SIZES}}'{{end}}
 
   smoke:loader:
     desc: Run the built binary with no args; must exit 2 and emit an error event

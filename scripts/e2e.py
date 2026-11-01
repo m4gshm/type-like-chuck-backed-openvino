@@ -10,12 +10,17 @@ Usage:
   python3 scripts/e2e.py manual [--model DIR] # interactive NDJSON client
   python3 scripts/e2e.py download-model [--out DIR]
                                               # fetch the default test model
+  python3 scripts/e2e.py bench [--device NPU] [--prop KEY=VALUE] [--cold]
+                                              # compile time + inference speed
+                                              # for 0.5B/1.5B/3B models
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -27,6 +32,26 @@ CACHE_DIR = os.path.join(ROOT, ".cache")
 
 DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov"
 DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")
+
+# Bench models: Qwen2.5-Coder in int8 (upstream) and nf4 AWQ (m4gshm HF),
+# three sizes each — quantization effect on compile time vs inference speed.
+BENCH_MODELS = [
+    ("0.5B", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")),
+    ("1.5B", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int8-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov")),
+    ("3B", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int8-ov",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov")),
+    ("0.5B-nf4", "m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov")),
+    ("1.5B-nf4", "m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-nf4-ov")),
+    ("3B-nf4", "m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-nf4-ov")),
+]
+BENCH_MAX_TOKENS = 64
+BENCH_RUNS = 2
+BENCH_READY_TIMEOUT = 1800  # first NPU compile of the 3B model can take minutes
 
 # Device for runner processes; resolved by select_device() unless set explicitly.
 RUNNER_DEVICE = "CPU"
@@ -121,10 +146,10 @@ class Runner:
         self.proc.stdin.write(json.dumps(obj) + "\n")
         self.proc.stdin.flush()
 
-    def wait_for(self, pred, timeout=120):
-        """Block until an event matching pred appears; returns it."""
+    def wait_for(self, pred, timeout=120, since=0):
+        """Block until an event matching pred appears after index `since`; returns it."""
         deadline = time.monotonic() + timeout
-        seen = 0
+        seen = since
         while time.monotonic() < deadline:
             for ev in self.events[seen:]:
                 seen += 1
@@ -364,6 +389,78 @@ def test_busy(model):
     return ok
 
 
+# ---------------------------------------------------------------- bench
+
+def bench_generate(r, run_id):
+    """One fixed-length FIM generation; returns (ttft_s, total_s, tokens)."""
+    start = len(r.events)
+    t0 = time.monotonic()
+    r.send({"type": "generate", "id": run_id, "prompt": FIM_PROMPT, "maxTokens": BENCH_MAX_TOKENS})
+    r.wait_for(lambda e: e.get("type") == "token", timeout=120, since=start)
+    ttft = time.monotonic() - t0
+    done = r.wait_for(lambda e: e.get("type") == "done", timeout=300, since=start)
+    total = time.monotonic() - t0
+    tokens = sum(1 for e in r.events[start:] if e.get("type") == "token")
+    if done.get("finishReason") not in ("length", "stop"):
+        raise AssertionError(f"bench run {run_id} failed: {done}")
+    return ttft, total, tokens
+
+
+def blob_cache_dir(model_dir, props):
+    """Per-model, per-prop-set compiled-blob cache; variants must not reuse blobs
+    compiled with other parameters (or the compile-time comparison is void)."""
+    key = f"{os.path.basename(model_dir)}-{hashlib.sha1('|'.join(sorted(props)).encode()).hexdigest()[:8]}"
+    return os.path.join(CACHE_DIR, "npu-blobs", key)
+
+
+def clear_blobs(path):
+    """Delete a compiled-blob cache dir. The NPU plugin writes cached blobs
+    read-only, which plain rmtree cannot remove on Windows."""
+    if not os.path.isdir(path):
+        return
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            os.chmod(os.path.join(root, name), stat.S_IWRITE)
+    shutil.rmtree(path)
+
+
+def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
+    """Download 0.5B/1.5B/3B, measure compile time and inference speed on each."""
+    if device == "auto":
+        fail("bench needs an explicit --device (NPU, GPU or CPU)")
+    rows = []
+    for name, repo, out in BENCH_MODELS:
+        if sizes and name not in sizes:
+            continue
+        out = os.environ.get(f"E2E_{name.replace('.', '_').replace('-', '_')}_DIR", out)
+        if not os.path.isfile(os.path.join(out, "openvino_model.xml")):
+            print(f"bench: downloading {name} ({repo})", flush=True)
+            download_model(out, repo)
+        cache = blob_cache_dir(out, props)
+        run_props = props if any(p.startswith("CACHE_DIR=") for p in props) else props + [f"CACHE_DIR={cache}"]
+        if cold:
+            clear_blobs(cache)
+        print(f"bench: {name} on {device}", flush=True)
+        r = Runner(model=out, device=device, props=run_props)
+        t0 = time.monotonic()
+        r.wait_for(lambda e: e.get("type") == "ready", timeout=BENCH_READY_TIMEOUT)
+        compile_s = time.monotonic() - t0
+        gens = []
+        for i in range(runs):
+            gens.append(bench_generate(r, i))
+        r.close()
+        ttft, total, tokens = gens[-1]  # steady state
+        rows.append((name, compile_s, ttft, total, tokens))
+        print(f"  {name}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
+              f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
+    print(f"\nmodel  device={device}  runs={runs}  maxTokens={BENCH_MAX_TOKENS}  "
+          f"props={props if props else 'runner defaults'}")
+    w = max((len(name) for name, *_rest in rows), default=len("model"))
+    print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
+    for name, c, ttft, total, tokens in rows:
+        print(f"{name:<{w}} {c:>9.1f} {ttft:>7.2f} {total:>6.2f} {tokens:>6} {tokens/total:>7.1f}")
+
+
 # ---------------------------------------------------------------- model download
 
 def hf_api(repo):
@@ -373,13 +470,20 @@ def hf_api(repo):
 
 
 def fetch(url, dest):
-    """Resumable download via curl (same approach as Taskfile.yaml)."""
+    """Resumable download via curl (same approach as Taskfile.yaml); tolerates flaky connections."""
     tmp = dest + ".part"
     if os.path.isfile(dest):
         print(f"  exists  {os.path.basename(dest)}")
         return
     print(f"  fetch   {os.path.basename(dest)}")
-    subprocess.run(["curl", "-fSsL", "-C", "-", "--retry", "3", "--retry-delay", "2", url, "-o", tmp], check=True)
+    for attempt in range(1, 11):
+        r = subprocess.run(["curl", "-fSsL", "-C", "-", "--retry", "3", "--retry-delay", "2", url, "-o", tmp])
+        if r.returncode == 0:
+            os.replace(tmp, dest)
+            return
+        print(f"  attempt {attempt} failed (curl {r.returncode}), resuming...", file=sys.stderr)
+        time.sleep(3)
+    subprocess.run(["curl", "-fSsL", "-C", "-", url, "-o", tmp], check=True)  # last try, raise
     os.replace(tmp, dest)
 
 
@@ -493,11 +597,22 @@ def main():
     p = cmd.add_parser("download-model")
     p.add_argument("--repo", default=DEFAULT_MODEL_REPO)
     p.add_argument("--out", default=DEFAULT_MODEL_DIR)
+    p = cmd.add_parser("bench")
+    p.add_argument("--device", default="NPU", help="NPU, GPU or CPU (no auto)")
+    p.add_argument("--prop", action="append", default=[],
+                   help="runner OpenVINO property KEY=VALUE, repeatable")
+    p.add_argument("--runs", type=int, default=BENCH_RUNS, help="generation runs per model (steady state is reported)")
+    p.add_argument("--cold", action="store_true",
+                   help="clear the NPU compiled-blob cache (.cache/npu-blobs) before each model")
+    p.add_argument("--sizes", default="0.5B,1.5B,3B,0.5B-nf4,1.5B-nf4,3B-nf4",
+                   help="comma-separated model sizes to bench (model dirs: E2E_0_5B_DIR / E2E_1_5B_DIR / E2E_3B_DIR / E2E_0_5B_nf4_DIR / E2E_1_5B_nf4_DIR / E2E_3B_nf4_DIR)")
     args = ap.parse_args()
 
     if args.cmd == "download-model":
         download_model(args.out, args.repo)
         print(f"model at {args.out}")
+    elif args.cmd == "bench":
+        bench_compile(args.device, args.prop, args.runs, args.cold, args.sizes.split(","))
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
     else:
