@@ -1,0 +1,16 @@
+{
+  "[cpp]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/.vscode/compile_commands.json",
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/src",
+    "${workspaceFolder}/vendor",
+    "${workspaceFolder}/.cache/ov-genai/**/runtime/include"
+  ],
+  "C_Cpp.default.defines": [
+    "TLC_OVGENAI_OV_VERSION=\"unknown\"",
+    "TLC_OVGENAI_APP_VERSION=\"unknown\""
+  ]
+}

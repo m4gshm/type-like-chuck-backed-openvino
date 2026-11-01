@@ -1,0 +1,10 @@
+schema: spec-driven
+
+context: |
+  Standalone C++ stdio runner for the TLC VS Code extension's `ovgenai` local
+  engine kind. Built on the OpenVINO GenAI C++ API (`ov::genai::LLMPipeline`),
+  communicates with the extension over stdin/stdout with newline-delimited
+  JSON. Targets: Windows x64 and Linux x64 (macOS is dev-only). Built with
+  CMake + go-task (tasks.yaml); CI publishes release-named binaries as GitHub
+  release assets on `v*` tags. The TLC plugin imports these binaries — it does
+  not build them.

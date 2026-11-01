@@ -1,0 +1,258 @@
+﻿# Build automation: `task <task>`. See README.md for usage.
+
+version: '3'
+
+vars:
+  OV_VERSION: '2026.4.1' # server path; file names embed the full OV_PKG_VERSION
+  OV_PKG_VERSION: '2026.4.1.0'
+  OV_CACHE_DIR: '.cache/ov-genai'
+  BUILD_DIR: 'build'
+  URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64.tar.gz'
+  URL_LINUX_ARM64: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu22_{{.OV_PKG_VERSION}}_arm64.tar.gz'
+  URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64.zip'
+  DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64'
+  DIR_LINUX_ARM64: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu22_{{.OV_PKG_VERSION}}_arm64'
+  DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64'
+  # no windows-arm64 OpenVINO GenAI archive exists; windows stays x64-only
+  # macOS is not a target: the extension uses an MLX backend there
+  OV_DIR: '{{.USER_WORKING_DIR}}/{{if eq ARCH "arm64"}}{{.DIR_LINUX_ARM64}}{{else}}{{.DIR_LINUX}}{{end}}'
+  OV_URL: '{{if eq ARCH "arm64"}}{{.URL_LINUX_ARM64}}{{else}}{{.URL_LINUX}}{{end}}'
+  RUNNER_POSIX: '{{if eq ARCH "arm64"}}tlc-ovgenai-runner-linux-arm64{{else}}tlc-ovgenai-runner-linux-x64{{end}}'
+  OV_DIR_POSIX: '{{.OV_DIR}}/runtime/cmake'
+  OV_LIB_POSIX: '{{.OV_DIR}}/runtime/lib/{{if eq ARCH "arm64"}}aarch64{{else}}intel64{{end}}:{{.OV_DIR}}/runtime/3rdparty/tbb/lib'
+  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int8-ov'
+
+tasks:
+  default:
+    desc: Download the OpenVINO runtime, build the runner for the host OS and run unit tests
+    cmds:
+      - task: test
+
+  runtime:
+    desc: Download and unpack the OpenVINO GenAI archive for the host OS
+    deps: ['runtime:{{if eq OS "windows"}}windows{{else}}linux{{end}}']
+
+  runtime:linux:
+    status:
+      - test -d '{{.OV_DIR}}/runtime/lib'
+    cmds:
+      - mkdir -p '{{.OV_CACHE_DIR}}/linux'
+      - task: download
+        vars: { URL: '{{.OV_URL}}', FILE: '{{.OV_CACHE_DIR}}/linux/ov.tgz' }
+      - tar xzf '{{.OV_CACHE_DIR}}/linux/ov.tgz' -C '{{.OV_CACHE_DIR}}/linux'
+      - rm '{{.OV_CACHE_DIR}}/linux/ov.tgz'
+    generates:
+      - '{{.OV_DIR}}/runtime/lib/**'
+
+  runtime:windows:
+    platforms: [windows]
+    status:
+      - powershell -Command "if (!(Test-Path '{{.DIR_WINDOWS}}\runtime\bin')) { exit 1 }"
+    cmds:
+      - powershell -Command "New-Item -ItemType Directory -Force '{{.OV_CACHE_DIR}}\windows' | Out-Null"
+      - task: download
+        vars: { URL: '{{.URL_WINDOWS}}', FILE: '{{.OV_CACHE_DIR}}/windows/ov.zip' }
+      - C:/Windows/System32/tar.exe -xf '{{.OV_CACHE_DIR}}\windows\ov.zip' -C '{{.OV_CACHE_DIR}}\windows'
+      - powershell -Command "Remove-Item '{{.OV_CACHE_DIR}}\windows\ov.zip'"
+    generates:
+      - '{{.DIR_WINDOWS}}/runtime/bin/**'
+
+  download:
+    desc: Resumable download; retries on bad responses and HTML error pages (server answers 200 for missing keys)
+    cmds:
+      - |
+        f='{{.FILE}}'
+        case "$f" in
+          *.zip) magic='504b' ;;   # PK, zip local header
+          *)     magic='1f8b' ;;   # gzip magic
+        esac
+        hex() { head -c 2 "$1" | od -An -tx1 | tr -d ' \n'; }
+        for i in 1 2 3 4 5 6; do
+          [ -f "$f" ] && [ "$(hex "$f")" != "$magic" ] && rm -f "$f"
+          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
+          echo "download attempt $i failed, resuming..."; sleep 3
+        done
+        exit 1
+
+  build:
+    desc: 'Native runner build for the host OS (win: MSVC, linux: gcc/clang)'
+    deps: [runtime]
+    cmds:
+      - task: 'build:{{if eq OS "windows"}}windows{{else}}posix{{end}}'
+
+  build:posix:
+    platforms: [linux]
+    cmds:
+      - cmake -S . -B '{{.BUILD_DIR}}/{{OS}}' -DOpenVINO_DIR='{{.OV_DIR_POSIX}}' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
+      - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
+      - mkdir -p '{{.BUILD_DIR}}'
+      - cp '{{.BUILD_DIR}}/{{OS}}/tlc-ovgenai-runner' '{{.BUILD_DIR}}/{{.RUNNER_POSIX}}'
+      - cp '{{.BUILD_DIR}}/{{OS}}/compile_commands.json' '.vscode/compile_commands.json'
+    sources:
+      - src/**/*
+      - CMakeLists.txt
+    generates:
+      - '{{.BUILD_DIR}}/{{.RUNNER_POSIX}}'
+
+  build:windows:
+    platforms: [windows]
+    cmds:
+      - cmake -S . -B '{{.BUILD_DIR}}\windows' -DOpenVINO_DIR='{{.USER_WORKING_DIR}}\{{.DIR_WINDOWS}}\runtime\cmake' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
+      - cmake --build '{{.BUILD_DIR}}\windows' --config Release
+      # The fresh exe is briefly locked by AV scanning; retry the copy.
+      - powershell -Command "New-Item -ItemType Directory -Force '{{.BUILD_DIR}}' | Out-Null; 1..5 | ForEach-Object { Copy-Item '{{.BUILD_DIR}}\windows\Release\tlc-ovgenai-runner.exe' '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe' -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }; if (-not (Test-Path '{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe')) { exit 1 }"
+      - powershell -Command "if (Test-Path '{{.BUILD_DIR}}\windows\compile_commands.json') { Copy-Item '{{.BUILD_DIR}}\windows\compile_commands.json' '.vscode\compile_commands.json' -Force }"
+    sources:
+      - src/**/*
+      - CMakeLists.txt
+    generates:
+      - '{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe'
+
+
+  smoke:
+    desc: NDJSON smoke run (set MODEL_DIR to an int8-ov model directory)
+    deps: [build]
+    env:
+      LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+    cmds:
+      - |
+        echo '{"type":"generate","id":1,"prompt":"<|fim_prefix|>def add(a, b):\n    <|fim_suffix|>\n    return a + b<|fim_middle|>","maxTokens":16,"stop":["\n"]}' \
+        | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{.RUNNER_POSIX}}{{end}} \
+        --model "${MODEL_DIR:?set MODEL_DIR to an int8-ov model directory}" --device CPU
+
+  fmt:
+    desc: Reformat src with clang-format (.clang-format; the binary VS Code cpptools uses)
+    cmds:
+      - |
+        if command -v clang-format >/dev/null 2>&1; then CF=clang-format
+        else CF="$(ls "$USERPROFILE"/.vscode/extensions/ms-vscode.cpptools-*/LLVM/bin/clang-format.exe | tail -1)"; fi
+        "$CF" -i --style=file src/*.cpp src/*.hpp
+
+  clean:
+    desc: Remove build artifacts and the downloaded OpenVINO runtime cache
+    cmds:
+      - rm -rf '{{.BUILD_DIR}}' '{{.OV_CACHE_DIR}}'
+      - cmd: powershell -Command "if (Test-Path build) { Remove-Item -Recurse -Force build }; if (Test-Path .cache) { Remove-Item -Recurse -Force .cache }"
+        platforms: [windows]
+
+  ci:
+    desc: Build for the host OS, run unit tests and the loader smoke check (CI entry point)
+    cmds:
+      - task: build
+      - task: test
+      - task: smoke:loader
+
+  test:
+    desc: Run unit tests (doctest via ctest)
+    deps: [build]
+    cmds:
+      - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
+      - ctest --test-dir '{{.BUILD_DIR}}/{{OS}}' --output-on-failure -C Release
+
+  model:
+    desc: Download the default E2E model into {{.MODEL_DIR}}
+    status:
+      - test -d '{{.MODEL_DIR}}'
+    cmds:
+      - python3 scripts/e2e.py download-model
+
+  e2e:
+    desc: 'Full E2E suite incl. FIM (downloads the default model into .cache if needed)'
+    deps: [build, model]
+    env:
+      E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
+    cmds:
+      - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
+
+  e2e:npu:
+    desc: 'Full E2E suite on NPU over the nf4 models (long ready timeout: first load compiles the graph)'
+    deps: [models:nf4]
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-1.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-3b-nf4-ov' }
+
+  models:nf4:
+    desc: Download the nf4 e2e models into .cache (m4gshm HF)
+    cmds:
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-0.5b-nf4-ov
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-1.5b-nf4-ov
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-3b-nf4-ov
+
+  e2e:gpu:
+    desc: Full E2E suite on GPU only
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: GPU }
+
+  e2e:cpu:
+    desc: Full E2E suite on CPU only
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: CPU }
+
+  e2e:protocol:
+    desc: E2E protocol tests only (no model needed)
+    deps: [build]
+    cmds:
+      - python3 scripts/e2e.py test
+
+  e2e:bench:
+    desc: 'Compile time + inference speed for 0.5B/1.5B/3B int8+int4+nf4 (E2E_DEVICE, E2E_SIZES="0.5B-int8,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
+    deps: [build]
+    cmds:
+      - python3 scripts/e2e.py bench --device '{{.E2E_DEVICE | default "NPU"}}' {{.E2E_PROPS}} {{if .E2E_COLD}}--cold{{end}} {{if .E2E_SIZES}}--sizes '{{.E2E_SIZES}}'{{end}}
+
+  smoke:loader:
+    desc: Run the built binary with no args; must exit 2 and emit an error event
+    deps: ['smoke:loader:{{if eq OS "windows"}}windows{{else}}posix{{end}}']
+
+  smoke:loader:posix:
+    platforms: [linux]
+    env:
+      LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+    cmds:
+      - |
+        code=0
+        out=$('{{.BUILD_DIR}}/{{.RUNNER_POSIX}}' 2>/dev/null) || code=$?
+        echo "$out"
+        [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
+        echo "$out" | grep -q '"type":"error"' || { echo "no error event in output" >&2; exit 1; }
+        out=$('{{.BUILD_DIR}}/{{.RUNNER_POSIX}}' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
+        echo "$out"
+        case "$out" in
+          *'"type":"version"'*) ;;
+          *) echo "no version event in output: $out" >&2; exit 1 ;;
+        esac
+        case "$out" in
+          *'"ovGenai":"{{.OV_PKG_VERSION}}"'*) ;;
+          *) echo "unexpected ovGenai version (expected {{.OV_PKG_VERSION}}): $out" >&2; exit 1 ;;
+        esac
+
+  smoke:loader:windows:
+    platforms: [windows]
+    cmds:
+      - |
+        code=0
+        # task interprets cmds with its own sh; ';' is the Windows PATH separator
+        export PATH="$PWD/{{.DIR_WINDOWS}}/runtime/bin/intel64/Release;$PWD/{{.DIR_WINDOWS}}/runtime/3rdparty/tbb/bin;$PATH"
+        out=$('{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe' 2>/dev/null) || code=$?
+        echo "$out"
+        [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
+        case "$out" in
+          *'"type":"error"'*) ;;
+          *) echo "no error event in output" >&2; exit 1 ;;
+        esac
+        out=$('{{.BUILD_DIR}}/tlc-ovgenai-runner-win32-x64.exe' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
+        echo "$out"
+        case "$out" in
+          *'"type":"version"'*) ;;
+          *) echo "no version event in output: $out" >&2; exit 1 ;;
+        esac
+        case "$out" in
+          *'"ovGenai":"{{.OV_PKG_VERSION}}"'*) ;;
+          *) echo "unexpected ovGenai version (expected {{.OV_PKG_VERSION}}): $out" >&2; exit 1 ;;
+        esac
