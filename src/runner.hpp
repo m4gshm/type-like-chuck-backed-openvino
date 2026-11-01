@@ -78,6 +78,7 @@ inline std::string finishReason(bool cancelled, int nativeReason) {
 // NPU->GPU fallback). --prop values win over these.
 inline std::map<std::string, std::string> npuDefaults() {
     return {
+        {"PERFORMANCE_HINT", "LATENCY"},
         {"NPU_USE_NPUW", "YES"},
         {"NPU_TURBO", "YES"},
         {"NPU_COMPILER_TYPE", "PLUGIN"},

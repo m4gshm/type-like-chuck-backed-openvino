@@ -59,7 +59,7 @@ TEST_CASE("parseArgs") {
         char* argv[] = {(char*)"prog", (char*)"--device", (char*)"NPU", (char*)"--ctx", (char*)"4096",
                         (char*)"--prop", (char*)"NPU_TURBO=NO"};
         const auto props = runner::effectiveProperties(parseArgs(7, argv).properties, 4096, true);
-        CHECK(props.size() == 16);
+        CHECK(props.size() == 17);
         CHECK(props.at("NPU_TURBO") == "NO");                       // user override wins
         CHECK(props.at("NPU_USE_NPUW") == "YES");                   // default added
         CHECK(props.at("NPUW_DEVICES") == "NPU,GPU");               // fallback chain
