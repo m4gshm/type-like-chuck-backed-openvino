@@ -5,4 +5,4 @@ __pycache__/
 logs/
 node_modules
 .vscode/compile_commands.json
-
+.DS_Store
