@@ -40,6 +40,12 @@ commands with `&&`.
 
 ## Conventions
 
+- Formatting follows `.clang-format` (LLVM base, `IndentWidth: 4`,
+  `AccessModifierOffset: -4`, `ColumnLimit: 0`, `PointerAlignment: Left`):
+  keep line breaks as written — never reflow, wrap or join lines; align
+  continuation lines with the opening bracket; `public:`/`private:` at column
+  0; a single space before trailing `//` comments. After writing or editing
+  C++, run `task fmt` (or clang-format) before committing.
 - Comments: default to **no comments**. Write code that explains itself; add a
   comment only when the code cannot convey non-obvious *why* — invariants,
   workarounds, platform quirks, external-command behavior. Never comment what
