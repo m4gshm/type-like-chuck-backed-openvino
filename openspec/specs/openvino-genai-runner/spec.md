@@ -7,7 +7,7 @@ Provides the native OpenVINO GenAI inference runner: per-platform release binari
 ## Requirements
 
 ### Requirement: Per-platform runner binaries
-The repository SHALL produce a prebuilt runner binary for each supported platform variant (Windows x64, Linux x64) with release-asset names, locally via the build tasks (`build/` directory) and in CI; `v*` tags SHALL publish both binaries as GitHub release assets.
+The repository SHALL produce a prebuilt runner binary for each supported platform variant (Windows x64, Linux x64, Linux arm64) with release-asset names, locally via the build tasks (`build/` directory) and in CI; `v*` tags SHALL publish all binaries as GitHub release assets. Windows arm64 SHALL NOT be produced (no OpenVINO GenAI runtime archive exists for it); macOS is not a target (the extension uses an MLX backend there).
 
 #### Scenario: Local build outputs
 - **WHEN** the build tasks (`task -t tasks.yaml build`, `task -t tasks.yaml linux`) complete

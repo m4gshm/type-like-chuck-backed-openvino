@@ -3,7 +3,8 @@
 Native C++ stdio runner for the TLC VS Code extension (`ovgenai` local engine
 kind). Loads an OpenVINO IR model via `ov::genai::LLMPipeline`, serves FIM
 completions as NDJSON over stdin/stdout. Release targets: Windows x64, Linux
-x64; macOS is dev-only.
+x64/arm64 (Windows arm64 has no OpenVINO GenAI runtime archive; on macOS the
+extension uses an MLX backend, not this runner).
 
 Counterpart repository: the TLC extension (`m4gshm/type-like-chuck-vs-code`)
 imports these binaries and reads the runner's embedded version markers — the

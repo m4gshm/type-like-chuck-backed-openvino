@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -75,10 +76,10 @@ def fail(msg):
 def binary_path():
     if sys.platform == "win32":
         p = os.path.join(BUILD_DIR, "tlc-ovgenai-runner-win32-x64.exe")
-    elif sys.platform == "darwin":
-        p = os.path.join(BUILD_DIR, "tlc-ovgenai-runner-macos-arm64")
     else:
-        p = os.path.join(BUILD_DIR, "tlc-ovgenai-runner-linux-x64")
+        arch = platform.machine().lower()
+        name = "tlc-ovgenai-runner-linux-arm64" if arch in ("aarch64", "arm64") else "tlc-ovgenai-runner-linux-x64"
+        p = os.path.join(BUILD_DIR, name)
     if not os.path.isfile(p):
         fail(f"{p} not found - run `task build` first")
     return p
@@ -96,14 +97,15 @@ def library_env():
             os.path.join(ov, sub, "..", "3rdparty", "tbb", "bin"),
         ]) + os.pathsep + env.get("PATH", "")
     else:
-        sub = "mac/openvino_genai_macos_12_6_2026.4.1.0_arm64" if sys.platform == "darwin" \
+        arch = platform.machine().lower()
+        sub = "linux/openvino_genai_ubuntu22_2026.4.1.0_arm64" if arch in ("aarch64", "arm64") \
             else "linux/openvino_genai_ubuntu24_2026.4.1.0_x86_64"
+        libdir = "aarch64" if arch in ("aarch64", "arm64") else "intel64"
         lib = os.pathsep.join([
-            os.path.join(ov, sub, "runtime", "lib", "intel64"),
+            os.path.join(ov, sub, "runtime", "lib", libdir),
             os.path.join(ov, sub, "runtime", "3rdparty", "tbb", "lib"),
         ])
-        var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
-        env[var] = lib + os.pathsep + env.get(var, "")
+        env["LD_LIBRARY_PATH"] = lib + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     return env
 
 

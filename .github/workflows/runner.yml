@@ -25,6 +25,8 @@ jobs:
             artifact: tlc-ovgenai-runner-win32-x64.exe
           - os: ubuntu-latest
             artifact: tlc-ovgenai-runner-linux-x64
+          - os: ubuntu-24.04-arm
+            artifact: tlc-ovgenai-runner-linux-arm64
     steps:
       - name: checkout
         uses: actions/checkout@v5

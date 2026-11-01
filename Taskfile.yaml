@@ -8,13 +8,18 @@ vars:
   OV_CACHE_DIR: '.cache/ov-genai'
   BUILD_DIR: 'build'
   URL_LINUX: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64.tar.gz'
+  URL_LINUX_ARM64: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/linux/openvino_genai_ubuntu22_{{.OV_PKG_VERSION}}_arm64.tar.gz'
   URL_WINDOWS: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/{{.OV_VERSION}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64.zip'
-  URL_MAC: 'https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/pre-release/{{.OV_MAC_VERSION}}/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64.tar.gz'
   DIR_LINUX: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu24_{{.OV_PKG_VERSION}}_x86_64'
+  DIR_LINUX_ARM64: '{{.OV_CACHE_DIR}}/linux/openvino_genai_ubuntu22_{{.OV_PKG_VERSION}}_arm64'
   DIR_WINDOWS: '{{.OV_CACHE_DIR}}/windows/openvino_genai_windows_{{.OV_PKG_VERSION}}_x86_64'
-  DIR_MAC: '{{.OV_CACHE_DIR}}/mac/openvino_genai_macos_12_6_{{.OV_MAC_VERSION}}_arm64'
-  OV_DIR_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/cmake'
-  OV_LIB_POSIX: '{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/lib/intel64:{{.USER_WORKING_DIR}}/{{if eq OS "darwin"}}{{.DIR_MAC}}{{else}}{{.DIR_LINUX}}{{end}}/runtime/3rdparty/tbb/lib'
+  # no windows-arm64 OpenVINO GenAI archive exists; windows stays x64-only
+  # macOS is not a target: the extension uses an MLX backend there
+  OV_DIR: '{{.USER_WORKING_DIR}}/{{if eq ARCH "arm64"}}{{.DIR_LINUX_ARM64}}{{else}}{{.DIR_LINUX}}{{end}}'
+  OV_URL: '{{if eq ARCH "arm64"}}{{.URL_LINUX_ARM64}}{{else}}{{.URL_LINUX}}{{end}}'
+  RUNNER_POSIX: '{{if eq ARCH "arm64"}}tlc-ovgenai-runner-linux-arm64{{else}}tlc-ovgenai-runner-linux-x64{{end}}'
+  OV_DIR_POSIX: '{{.OV_DIR}}/runtime/cmake'
+  OV_LIB_POSIX: '{{.OV_DIR}}/runtime/lib/{{if eq ARCH "arm64"}}aarch64{{else}}intel64{{end}}:{{.OV_DIR}}/runtime/3rdparty/tbb/lib'
   MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int8-ov'
 
 tasks:
@@ -25,31 +30,19 @@ tasks:
 
   runtime:
     desc: Download and unpack the OpenVINO GenAI archive for the host OS
-    deps: ['runtime:{{if eq OS "windows"}}windows{{else if eq OS "darwin"}}mac{{else}}linux{{end}}']
+    deps: ['runtime:{{if eq OS "windows"}}windows{{else}}linux{{end}}']
 
   runtime:linux:
     status:
-      - test -d '{{.DIR_LINUX}}/runtime/lib'
+      - test -d '{{.OV_DIR}}/runtime/lib'
     cmds:
       - mkdir -p '{{.OV_CACHE_DIR}}/linux'
       - task: download
-        vars: { URL: '{{.URL_LINUX}}', FILE: '{{.OV_CACHE_DIR}}/linux/ov.tgz' }
+        vars: { URL: '{{.OV_URL}}', FILE: '{{.OV_CACHE_DIR}}/linux/ov.tgz' }
       - tar xzf '{{.OV_CACHE_DIR}}/linux/ov.tgz' -C '{{.OV_CACHE_DIR}}/linux'
       - rm '{{.OV_CACHE_DIR}}/linux/ov.tgz'
     generates:
-      - '{{.DIR_LINUX}}/runtime/lib/**'
-
-  runtime:mac:
-    status:
-      - test -d '{{.DIR_MAC}}/runtime/lib'
-    cmds:
-      - mkdir -p '{{.OV_CACHE_DIR}}/mac'
-      - task: download
-        vars: { URL: '{{.URL_MAC}}', FILE: '{{.OV_CACHE_DIR}}/mac/ov.tgz' }
-      - tar xzf '{{.OV_CACHE_DIR}}/mac/ov.tgz' -C '{{.OV_CACHE_DIR}}/mac'
-      - rm '{{.OV_CACHE_DIR}}/mac/ov.tgz'
-    generates:
-      - '{{.DIR_MAC}}/runtime/lib/**'
+      - '{{.OV_DIR}}/runtime/lib/**'
 
   runtime:windows:
     platforms: [windows]
@@ -82,24 +75,23 @@ tasks:
         exit 1
 
   build:
-    desc: 'Native runner build for the host OS (mac: clang, win: MSVC)'
+    desc: 'Native runner build for the host OS (win: MSVC, linux: gcc/clang)'
     deps: [runtime]
     cmds:
       - task: 'build:{{if eq OS "windows"}}windows{{else}}posix{{end}}'
 
   build:posix:
-    platforms: [linux, darwin]
+    platforms: [linux]
     cmds:
       - cmake -S . -B '{{.BUILD_DIR}}/{{OS}}' -DOpenVINO_DIR='{{.OV_DIR_POSIX}}' -DOV_GENAI_VERSION='{{.OV_PKG_VERSION}}' -DCMAKE_BUILD_TYPE=Release
       - cmake --build '{{.BUILD_DIR}}/{{OS}}' --config Release
       - mkdir -p '{{.BUILD_DIR}}'
-      - cp '{{.BUILD_DIR}}/{{OS}}/tlc-ovgenai-runner' '{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}'
+      - cp '{{.BUILD_DIR}}/{{OS}}/tlc-ovgenai-runner' '{{.BUILD_DIR}}/{{.RUNNER_POSIX}}'
     sources:
       - src/**/*
       - CMakeLists.txt
     generates:
-      - '{{.BUILD_DIR}}/tlc-ovgenai-runner-linux-x64'
-      - '{{.BUILD_DIR}}/tlc-ovgenai-runner-macos-arm64'
+      - '{{.BUILD_DIR}}/{{.RUNNER_POSIX}}'
 
   build:windows:
     platforms: [windows]
@@ -119,12 +111,11 @@ tasks:
     desc: NDJSON smoke run (set MODEL_DIR to an int8-ov model directory)
     deps: [build]
     env:
-      DYLD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
       LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
     cmds:
       - |
         echo '{"type":"generate","id":1,"prompt":"<|fim_prefix|>def add(a, b):\n    <|fim_suffix|>\n    return a + b<|fim_middle|>","maxTokens":16,"stop":["\n"]}' \
-        | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}{{end}} \
+        | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{.RUNNER_POSIX}}{{end}} \
         --model "${MODEL_DIR:?set MODEL_DIR to an int8-ov model directory}" --device CPU
 
   clean:
@@ -210,18 +201,17 @@ tasks:
     deps: ['smoke:loader:{{if eq OS "windows"}}windows{{else}}posix{{end}}']
 
   smoke:loader:posix:
-    platforms: [linux, darwin]
+    platforms: [linux]
     env:
-      DYLD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
       LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
     cmds:
       - |
         code=0
-        out=$('{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}' 2>/dev/null) || code=$?
+        out=$('{{.BUILD_DIR}}/{{.RUNNER_POSIX}}' 2>/dev/null) || code=$?
         echo "$out"
         [ "$code" -eq 2 ] || { echo "expected exit code 2, got $code" >&2; exit 1; }
         echo "$out" | grep -q '"type":"error"' || { echo "no error event in output" >&2; exit 1; }
-        out=$('{{.BUILD_DIR}}/{{if eq OS "linux"}}tlc-ovgenai-runner-linux-x64{{else}}tlc-ovgenai-runner-macos-arm64{{end}}' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
+        out=$('{{.BUILD_DIR}}/{{.RUNNER_POSIX}}' --version 2>/dev/null) || { echo "--version failed" >&2; exit 1; }
         echo "$out"
         case "$out" in
           *'"type":"version"'*) ;;

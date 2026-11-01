@@ -3,8 +3,9 @@
 Native stdio runner used by the TLC VS Code extension as the `ovgenai` local
 engine kind. Loads an OpenVINO IR model directory through
 `ov::genai::LLMPipeline` and serves FIM completions over newline-delimited
-JSON on stdin/stdout. Targets: **Windows x64** and **Linux x64** (macOS builds
-work for development only and are not a release target).
+JSON on stdin/stdout. Release targets: **Windows x64**, **Linux x64/arm64**.
+Windows arm64 is not buildable (no OpenVINO GenAI runtime archive); on macOS
+the extension uses an MLX backend instead of this runner.
 
 ## Protocol
 
@@ -55,7 +56,8 @@ task smoke   # NDJSON smoke run (MODEL_DIR=<int8-ov model directory>)
 ```
 
 Release-named binaries land in `build/`:
-`tlc-ovgenai-runner-linux-x64`, `tlc-ovgenai-runner-win32-x64.exe`
+`tlc-ovgenai-runner-linux-x64`, `tlc-ovgenai-runner-linux-arm64`,
+`tlc-ovgenai-runner-win32-x64.exe`
 (Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
 
 CI (`.github/workflows/runner.yml`) builds both platforms, runs a loader smoke
