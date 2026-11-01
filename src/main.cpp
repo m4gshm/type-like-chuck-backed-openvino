@@ -141,7 +141,7 @@ private:
                 return;
             }
             const auto it = std::find_if(queue_.begin(), queue_.end(),
-                [id](const runner::GenerateRequest& r) { return r.id == id; });
+                                         [id](const runner::GenerateRequest& r) { return r.id == id; });
             if (it != queue_.end()) {
                 queue_.erase(it);
                 removed = true;
@@ -158,7 +158,7 @@ private:
             std::lock_guard<std::mutex> lock(mutex_);
             shutdown_ = true;
             std::transform(queue_.begin(), queue_.end(), std::back_inserter(dropped),
-                [](const runner::GenerateRequest& r) { return r.id; });
+                           [](const runner::GenerateRequest& r) { return r.id; });
             queue_.clear();
             cancelled_.store(true);
         }
@@ -210,7 +210,7 @@ private:
                     return ov::genai::StreamingStatus::RUNNING;
                 });
             const int nativeReason = results.finish_reasons.empty() ? 0
-                : static_cast<int>(results.finish_reasons.front());
+                                                                    : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
             emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}});
@@ -234,7 +234,7 @@ private:
     bool active_ = false;
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     // Must run before any OpenVINO code can log (see openEventStream).

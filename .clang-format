@@ -1,4 +1,6 @@
 BasedOnStyle: LLVM
 IndentWidth: 4
-ColumnLimit: 100
+AccessModifierOffset: -4
+# ColumnLimit 0: existing line breaks are kept; lines are neither wrapped nor joined.
+ColumnLimit: 0
 PointerAlignment: Left

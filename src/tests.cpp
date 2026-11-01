@@ -60,10 +60,10 @@ TEST_CASE("parseArgs") {
                         (char*)"--prop", (char*)"NPU_TURBO=NO"};
         const auto props = runner::effectiveProperties(parseArgs(7, argv).properties, 4096, true);
         CHECK(props.size() == 17);
-        CHECK(props.at("NPU_TURBO") == "NO");                       // user override wins
-        CHECK(props.at("NPU_USE_NPUW") == "YES");                   // default added
-        CHECK(props.at("NPUW_DEVICES") == "NPU,GPU");               // fallback chain
-        CHECK(props.at("MAX_PROMPT_LEN") == "4096");                // --ctx wired on NPU
+        CHECK(props.at("NPU_TURBO") == "NO");         // user override wins
+        CHECK(props.at("NPU_USE_NPUW") == "YES");     // default added
+        CHECK(props.at("NPUW_DEVICES") == "NPU,GPU"); // fallback chain
+        CHECK(props.at("MAX_PROMPT_LEN") == "4096");  // --ctx wired on NPU
     }
     SUBCASE("cpu gets no npu props") {
         const auto props = runner::effectiveProperties({}, 4096, false);
@@ -109,8 +109,8 @@ TEST_CASE("finishReason") {
         CHECK(finishReason(false, 2) == "length");
     }
     SUBCASE("everything else is a stop") {
-        CHECK(finishReason(false, 0) == "stop");  // NONE
-        CHECK(finishReason(false, 1) == "stop");  // STOP (EOS / stop strings)
-        CHECK(finishReason(false, 3) == "stop");  // TOOL_CALL
+        CHECK(finishReason(false, 0) == "stop"); // NONE
+        CHECK(finishReason(false, 1) == "stop"); // STOP (EOS / stop strings)
+        CHECK(finishReason(false, 3) == "stop"); // TOOL_CALL
     }
 }
