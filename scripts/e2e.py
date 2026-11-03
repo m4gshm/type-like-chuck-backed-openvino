@@ -465,11 +465,13 @@ def clear_blobs(path):
     shutil.rmtree(path)
 
 
-def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
-    """Download 0.5B/1.5B/3B, measure compile time and inference speed on each."""
+def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
+    """Run the bench for one device; returns (characteristics, rows) without
+    printing the table — the caller decides when to print it."""
     if device == "auto":
-        fail("bench needs an explicit --device (NPU, GPU or CPU)")
+        fail("bench needs an explicit device (NPU, GPU or CPU)")
     rows = []
+    chars = {"device": device}
     # NPU_TURBO=true trades higher power draw for better throughput; keep both
     # variants on separate blob caches (the cache key includes the props)
     variants = ([("turbo-no", ["NPU_TURBO=false"]), ("turbo-yes", ["NPU_TURBO=true"])]
@@ -493,22 +495,49 @@ def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
             print(f"bench: {label} on {device}", flush=True)
             r = Runner(model=out, device=device, props=run_props)
             t0 = time.monotonic()
-            r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
+            ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
             compile_s = time.monotonic() - t0
             gens = []
             for i in range(runs):
                 gens.append(bench_generate(r, i))
             r.close()
+            chars = {"device": device,
+                     "name": ready.get("deviceName") or "?",
+                     "ctx": ready.get("ctx")}
             ttft, total, tokens = gens[-1]  # steady state
             rows.append((label, compile_s, ttft, total, tokens))
             print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
                   f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
-    print(f"\nmodel  device={device}  runs={runs}  maxTokens={BENCH_MAX_TOKENS}  "
-          f"props={props if props else 'runner defaults'}")
+    return chars, rows
+
+
+def print_bench_table(chars, rows, runs=BENCH_RUNS):
+    """Device characteristics header followed by the results table."""
+    print(f"\n== {chars['device']} ==  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
+          f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  props={chars.get('props', 'runner defaults')}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
     for name, c, ttft, total, tokens in rows:
         print(f"{name:<{w}} {c:>9.1f} {ttft:>7.2f} {total:>6.2f} {tokens:>6} {tokens/total:>7.1f}")
+
+
+def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
+    """Bench a single device and print its table (kept for --device)."""
+    chars, rows = bench_run(device, props, runs, cold, sizes)
+    chars["props"] = props if props else "runner defaults"
+    print_bench_table(chars, rows, runs)
+
+
+def bench_devices(devices, props, runs=BENCH_RUNS, cold=False, sizes=None):
+    """Bench every device, then print all tables with device characteristics."""
+    results = []
+    for device in devices:
+        chars, rows = bench_run(device, props, runs, cold, sizes)
+        chars["props"] = props if props else "runner defaults"
+        results.append((chars, rows))
+    print("\n=== bench results ===")
+    for chars, rows in results:
+        print_bench_table(chars, rows, runs)
 
 
 # ---------------------------------------------------------------- model download
@@ -648,7 +677,9 @@ def main():
     p.add_argument("--repo", default=DEFAULT_MODEL_REPO)
     p.add_argument("--out", default=DEFAULT_MODEL_DIR)
     p = cmd.add_parser("bench")
-    p.add_argument("--device", default="NPU", help="NPU, GPU or CPU (no auto)")
+    p.add_argument("--device", default="NPU", help="NPU, GPU or CPU (no auto; single device, table printed at once)")
+    p.add_argument("--devices", default=None,
+                   help="space-separated device list (e.g. \"NPU GPU\"): bench all of them, then print every table with device characteristics at the end")
     p.add_argument("--prop", action="append", default=[],
                    help="runner OpenVINO property KEY=VALUE, repeatable")
     p.add_argument("--runs", type=int, default=BENCH_RUNS, help="generation runs per model (steady state is reported)")
@@ -662,8 +693,12 @@ def main():
         download_model(args.out, args.repo)
         print(f"model at {args.out}")
     elif args.cmd == "bench":
-        bench_compile(args.device, args.prop, args.runs, args.cold,
-                      args.sizes.split(",") if args.sizes else None)
+        if args.devices:
+            bench_devices(args.devices.split(), args.prop, args.runs, args.cold,
+                          args.sizes.split(",") if args.sizes else None)
+        else:
+            bench_compile(args.device, args.prop, args.runs, args.cold,
+                          args.sizes.split(",") if args.sizes else None)
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
     else:

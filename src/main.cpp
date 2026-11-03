@@ -20,6 +20,8 @@
 #include <openvino/genai/generation_config.hpp>
 #include <openvino/genai/llm_pipeline.hpp>
 #include <openvino/genai/streamer_base.hpp>
+#include <openvino/runtime/core.hpp>
+#include <openvino/runtime/properties.hpp>
 
 #include "runner.hpp"
 
@@ -281,10 +283,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Diagnostic only; not every device/plugin exposes its full name.
+    std::string deviceName;
+    try {
+        ov::Core core;
+        deviceName = core.get_property(options.device, ov::device::full_name);
+    } catch (const std::exception&) {
+    }
+
     emit(json{{"type", kEventReady},
               {"model", options.modelPath},
               {"device", options.device},
-              {"ctx", options.contextLength}});
+              {"ctx", options.contextLength},
+              {"deviceName", deviceName}});
 
     Runner runner(std::move(pipeline));
     runner.run();
