@@ -29,7 +29,8 @@ task build    # runtime + native build for the host OS → build/
 task test
 task e2e:protocol
 task e2e
-task e2e:bench   # compile time + inference speed for 0.5B/1.5B/3B, int8 + int4 + nf4 (downloads models)
+task e2e:bench   # compile time + inference speed, int8/int4 (upstream) + nf4/int8-sym/int4-sym (m4gshm) x 0.5B/1.5B/3B (downloads models)
+task e2e:bench:gpu  # same bench on GPU; task e2e:gpu:nf4 for the full suite over nf4 models
 python3 scripts/e2e.py manual --model <dir>  # interactive NDJSON client (/fim helper, /quit)
 ```
 

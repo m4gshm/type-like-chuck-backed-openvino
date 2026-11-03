@@ -182,11 +182,32 @@ tasks:
       - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-1.5b-nf4-ov
       - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq --out .cache/models/qwen2.5-coder-3b-nf4-ov
 
+  models:quant-sym:
+    desc: Download the int8/int4 sym e2e models into .cache (m4gshm HF)
+    cmds:
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-0.5B-int8-sym --out .cache/models/qwen2.5-coder-0.5b-int8-sym
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-1.5B-int8-sym --out .cache/models/qwen2.5-coder-1.5b-int8-sym
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-3B-int8-sym --out .cache/models/qwen2.5-coder-3b-int8-sym
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-0.5B-int4-sym-g128-se-awq --out .cache/models/qwen2.5-coder-0.5b-int4-sym
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-1.5B-int4-sym-g128-se-awq --out .cache/models/qwen2.5-coder-1.5b-int4-sym
+      - python3 scripts/e2e.py download-model --repo m4gshm/Qwen2.5-Coder-3B-int4-sym-g128-se-awq --out .cache/models/qwen2.5-coder-3b-int4-sym
+
   e2e:gpu:
     desc: Full E2E suite on GPU only
     cmds:
       - task: e2e
         vars: { E2E_DEVICE: GPU }
+
+  e2e:gpu:nf4:
+    desc: Full E2E suite on GPU over the nf4 models
+    deps: [models:nf4]
+    cmds:
+      - task: e2e
+        vars: { E2E_DEVICE: GPU, MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: GPU, MODEL_DIR: '.cache/models/qwen2.5-coder-1.5b-nf4-ov' }
+      - task: e2e
+        vars: { E2E_DEVICE: GPU, MODEL_DIR: '.cache/models/qwen2.5-coder-3b-nf4-ov' }
 
   e2e:cpu:
     desc: Full E2E suite on CPU only
@@ -201,10 +222,33 @@ tasks:
       - python3 scripts/e2e.py test
 
   e2e:bench:
-    desc: 'Compile time + inference speed for 0.5B/1.5B/3B int8+int4+nf4 (E2E_DEVICE, E2E_SIZES="0.5B-int8,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
+    desc: 'Compile time + inference speed per device (NPU then GPU; E2E_DEVICES="GPU" to limit, E2E_SIZES="0.5B-int8,1.5B-nf4", E2E_PROPS="--prop KEY=V", E2E_COLD=1 to wipe the blob cache per model)'
     deps: [build]
     cmds:
-      - python3 scripts/e2e.py bench --device '{{.E2E_DEVICE | default "NPU"}}' {{.E2E_PROPS}} {{if .E2E_COLD}}--cold{{end}} {{if .E2E_SIZES}}--sizes '{{.E2E_SIZES}}'{{end}}
+      - |
+        {{- $sizes := .E2E_SIZES}}{{$props := .E2E_PROPS}}{{$cold := .E2E_COLD}}
+        {{- range $d := (.E2E_DEVICES | default "NPU GPU") | splitList " "}}
+        python3 scripts/e2e.py bench --device '{{$d}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
+        {{- end}}
+
+  e2e:bench:nf4:
+    desc: 'Bench the nf4 models on NPU and GPU for a like-for-like quantization comparison'
+    deps: [models:nf4]
+    cmds:
+      - task: e2e:bench
+        vars: { E2E_DEVICES: 'NPU GPU', E2E_SIZES: '0.5B-nf4,1.5B-nf4,3B-nf4' }
+
+  e2e:bench:npu:
+    desc: 'Bench on NPU only (same options as e2e:bench via E2E_SIZES/E2E_PROPS/E2E_COLD)'
+    cmds:
+      - task: e2e:bench
+        vars: { E2E_DEVICES: NPU }
+
+  e2e:bench:gpu:
+    desc: 'Bench on GPU only (same options as e2e:bench via E2E_SIZES/E2E_PROPS/E2E_COLD)'
+    cmds:
+      - task: e2e:bench
+        vars: { E2E_DEVICES: GPU }
 
   smoke:loader:
     desc: Run the built binary with no args; must exit 2 and emit an error event

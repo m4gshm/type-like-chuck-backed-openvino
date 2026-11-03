@@ -34,27 +34,38 @@ CACHE_DIR = os.path.join(ROOT, ".cache")
 DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov"
 DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")
 
-# Bench models: Qwen2.5-Coder in int8/int4 (upstream OpenVINO) and nf4 AWQ
-# (m4gshm HF), three sizes each — quantization effect on compile vs inference.
+# The upstream int4 models take very long to compile on NPU; excluded there.
 BENCH_MODELS = [
     ("0.5B-int8", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov"), True),
     ("1.5B-int8", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov"), True),
     ("3B-int8", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov"), True),
     ("0.5B-int4", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov"), False),
     ("1.5B-int4", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-ov"), False),
     ("3B-int4", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-ov"), False),
     ("0.5B-nf4", "m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov"), True),
     ("1.5B-nf4", "m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-nf4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-nf4-ov"), True),
     ("3B-nf4", "m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-nf4-ov")),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-nf4-ov"), True),
+    ("0.5B-int8-sym", "m4gshm/Qwen2.5-Coder-0.5B-int8-sym",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-sym"), True),
+    ("1.5B-int8-sym", "m4gshm/Qwen2.5-Coder-1.5B-int8-sym",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-sym"), True),
+    ("3B-int8-sym", "m4gshm/Qwen2.5-Coder-3B-int8-sym",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-sym"), True),
+    ("0.5B-int4-sym", "m4gshm/Qwen2.5-Coder-0.5B-int4-sym-g128-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-sym"), True),
+    ("1.5B-int4-sym", "m4gshm/Qwen2.5-Coder-1.5B-int4-sym-g128-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-sym"), True),
+    ("3B-int4-sym", "m4gshm/Qwen2.5-Coder-3B-int4-sym-g128-se-awq",
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-sym"), True),
 ]
 BENCH_MAX_TOKENS = 64
 BENCH_RUNS = 2
@@ -459,30 +470,39 @@ def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
     if device == "auto":
         fail("bench needs an explicit --device (NPU, GPU or CPU)")
     rows = []
-    for name, repo, out in BENCH_MODELS:
+    # NPU_TURBO=true trades higher power draw for better throughput; keep both
+    # variants on separate blob caches (the cache key includes the props)
+    variants = ([("turbo-no", ["NPU_TURBO=false"]), ("turbo-yes", ["NPU_TURBO=true"])]
+                if device == "NPU" else [("", [])])
+    for name, repo, out, on_npu in BENCH_MODELS:
         if sizes and name not in sizes:
+            continue
+        if device == "NPU" and not on_npu and not (sizes and name in sizes):
+            print(f"bench: skipping {name} on NPU (slow int4 compile)", flush=True)
             continue
         out = os.environ.get(f"E2E_{name.replace('.', '_').replace('-', '_')}_DIR", out)
         if not os.path.isfile(os.path.join(out, "openvino_model.xml")):
             print(f"bench: downloading {name} ({repo})", flush=True)
             download_model(out, repo)
-        cache = blob_cache_dir(out, props)
-        run_props = props if any(p.startswith("CACHE_DIR=") for p in props) else props + [f"CACHE_DIR={cache}"]
-        if cold:
-            clear_blobs(cache)
-        print(f"bench: {name} on {device}", flush=True)
-        r = Runner(model=out, device=device, props=run_props)
-        t0 = time.monotonic()
-        r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
-        compile_s = time.monotonic() - t0
-        gens = []
-        for i in range(runs):
-            gens.append(bench_generate(r, i))
-        r.close()
-        ttft, total, tokens = gens[-1]  # steady state
-        rows.append((name, compile_s, ttft, total, tokens))
-        print(f"  {name}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
-              f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
+        for tag, extra in variants:
+            cache = blob_cache_dir(out, props + extra)
+            run_props = props + extra if any(p.startswith("CACHE_DIR=") for p in props) else props + extra + [f"CACHE_DIR={cache}"]
+            if cold:
+                clear_blobs(cache)
+            label = f"{name}{'-' + tag if tag else ''}"
+            print(f"bench: {label} on {device}", flush=True)
+            r = Runner(model=out, device=device, props=run_props)
+            t0 = time.monotonic()
+            r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
+            compile_s = time.monotonic() - t0
+            gens = []
+            for i in range(runs):
+                gens.append(bench_generate(r, i))
+            r.close()
+            ttft, total, tokens = gens[-1]  # steady state
+            rows.append((label, compile_s, ttft, total, tokens))
+            print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
+                  f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
     print(f"\nmodel  device={device}  runs={runs}  maxTokens={BENCH_MAX_TOKENS}  "
           f"props={props if props else 'runner defaults'}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
@@ -634,15 +654,16 @@ def main():
     p.add_argument("--runs", type=int, default=BENCH_RUNS, help="generation runs per model (steady state is reported)")
     p.add_argument("--cold", action="store_true",
                    help="clear the NPU compiled-blob cache (.cache/npu-blobs) before each model")
-    p.add_argument("--sizes", default="0.5B-int8,1.5B-int8,3B-int8,0.5B-int4,1.5B-int4,3B-int4,0.5B-nf4,1.5B-nf4,3B-nf4",
-                   help="comma-separated model sizes to bench (model dirs: E2E_0_5B_int8_DIR / E2E_1_5B_int8_DIR / E2E_3B_int8_DIR / E2E_0_5B_int4_DIR / E2E_1_5B_int4_DIR / E2E_3B_int4_DIR / E2E_0_5B_nf4_DIR / E2E_1_5B_nf4_DIR / E2E_3B_nf4_DIR)")
+    p.add_argument("--sizes", default=None,
+                   help="comma-separated model sizes to bench (default: all BENCH_MODELS; on NPU the slow-compiling upstream int4 models are skipped unless listed explicitly; per-model dir override E2E_<name with . and - replaced by _>_DIR, e.g. E2E_0_5B_int8_DIR)")
     args = ap.parse_args()
 
     if args.cmd == "download-model":
         download_model(args.out, args.repo)
         print(f"model at {args.out}")
     elif args.cmd == "bench":
-        bench_compile(args.device, args.prop, args.runs, args.cold, args.sizes.split(","))
+        bench_compile(args.device, args.prop, args.runs, args.cold,
+                      args.sizes.split(",") if args.sizes else None)
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
     else:
