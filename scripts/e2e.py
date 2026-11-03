@@ -472,10 +472,6 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         fail("bench needs an explicit device (NPU, GPU or CPU)")
     rows = []
     chars = {"device": device}
-    # NPU_TURBO=true trades higher power draw for better throughput; keep both
-    # variants on separate blob caches (the cache key includes the props)
-    variants = ([("turbo-no", ["NPU_TURBO=false"]), ("turbo-yes", ["NPU_TURBO=true"])]
-                if device == "NPU" else [("", [])])
     for name, repo, out, on_npu in BENCH_MODELS:
         if sizes and name not in sizes:
             continue
@@ -486,28 +482,27 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         if not os.path.isfile(os.path.join(out, "openvino_model.xml")):
             print(f"bench: downloading {name} ({repo})", flush=True)
             download_model(out, repo)
-        for tag, extra in variants:
-            cache = blob_cache_dir(out, props + extra)
-            run_props = props + extra if any(p.startswith("CACHE_DIR=") for p in props) else props + extra + [f"CACHE_DIR={cache}"]
-            if cold:
-                clear_blobs(cache)
-            label = f"{name}{'-' + tag if tag else ''}"
-            print(f"bench: {label} on {device}", flush=True)
-            r = Runner(model=out, device=device, props=run_props)
-            t0 = time.monotonic()
-            ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
-            compile_s = time.monotonic() - t0
-            gens = []
-            for i in range(runs):
-                gens.append(bench_generate(r, i))
-            r.close()
-            chars = {"device": device,
-                     "name": ready.get("deviceName") or "?",
-                     "ctx": ready.get("ctx")}
-            ttft, total, tokens = gens[-1]  # steady state
-            rows.append((label, compile_s, ttft, total, tokens))
-            print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
-                  f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
+        cache = blob_cache_dir(out, props)
+        run_props = props if any(p.startswith("CACHE_DIR=") for p in props) else props + [f"CACHE_DIR={cache}"]
+        if cold:
+            clear_blobs(cache)
+        label = name
+        print(f"bench: {label} on {device}", flush=True)
+        r = Runner(model=out, device=device, props=run_props)
+        t0 = time.monotonic()
+        ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
+        compile_s = time.monotonic() - t0
+        gens = []
+        for i in range(runs):
+            gens.append(bench_generate(r, i))
+        r.close()
+        chars = {"device": device,
+                 "name": ready.get("deviceName") or "?",
+                 "ctx": ready.get("ctx")}
+        ttft, total, tokens = gens[-1]  # steady state
+        rows.append((label, compile_s, ttft, total, tokens))
+        print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
+              f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
     return chars, rows
 
 
