@@ -465,13 +465,80 @@ def clear_blobs(path):
     shutil.rmtree(path)
 
 
+def _sys_info():
+    """Host characteristics for the bench header: computer model, CPU, RAM, OS."""
+    info = {}
+
+    def first_line(*args):
+        try:
+            return subprocess.check_output(args, text=True).strip()
+        except Exception:
+            return None
+
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(["system_profiler", "SPHardwareDataType"], text=True)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("Model Name:"):
+                    info["host"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Chip:"):
+                    info["cpu"] = line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        ram = first_line("sysctl", "-n", "hw.memsize")
+        if ram and ram.isdigit():
+            info["ram"] = f"{int(ram) // (1 << 30)} GB"
+        ver = first_line("sw_vers", "-productVersion")
+        if ver:
+            info["os"] = f"macOS {ver}"
+    elif os.name == "nt":
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "(Get-CimInstance Win32_ComputerSystem).Model")
+        if out:
+            info["host"] = out
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "(Get-CimInstance Win32_Processor).Name")
+        if out:
+            info["cpu"] = out.splitlines()[0].strip()
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)")
+        if out and out.isdigit():
+            info["ram"] = f"{out} GB"
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "(Get-CimInstance Win32_OperatingSystem).Caption")
+        if out:
+            info["os"] = out
+    else:
+        try:
+            with open("/sys/devices/virtual/dmi/id/product_name") as f:
+                info["host"] = f.read().strip()
+        except Exception:
+            pass
+        out = first_line("sh", "-c", "lscpu | sed -n 's/^Model name:\\s*//p'")
+        if out:
+            info["cpu"] = out.splitlines()[0].strip()
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        info["ram"] = f"{int(line.split()[1]) // (1 << 20)} GB"
+                        break
+        except Exception:
+            pass
+        out = first_line("sh", "-c", ". /etc/os-release && echo $PRETTY_NAME")
+        if out:
+            info["os"] = out
+    return info
+
+
 def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
     """Run the bench for one device; returns (characteristics, rows) without
     printing the table — the caller decides when to print it."""
     if device == "auto":
         fail("bench needs an explicit device (NPU, GPU or CPU)")
     rows = []
-    chars = {"device": device}
+    chars = {"device": device, **_sys_info()}
     for name, repo, out, on_npu in BENCH_MODELS:
         if sizes and name not in sizes:
             continue
@@ -496,9 +563,8 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         for i in range(runs):
             gens.append(bench_generate(r, i))
         r.close()
-        chars = {"device": device,
-                 "name": ready.get("deviceName") or "?",
-                 "ctx": ready.get("ctx")}
+        chars.update({"name": ready.get("deviceName") or "?",
+                      "ctx": ready.get("ctx")})
         ttft, total, tokens = gens[-1]  # steady state
         rows.append((label, compile_s, ttft, total, tokens))
         print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
@@ -508,7 +574,8 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
 
 def print_bench_table(chars, rows, runs=BENCH_RUNS):
     """Device characteristics header followed by the results table."""
-    print(f"\n== {chars['device']} ==  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
+    print(f"\n== {chars['device']} ==  host={chars.get('host', '?')}  cpu={chars.get('cpu', '?')}  "
+          f"ram={chars.get('ram', '?')}  os={chars.get('os', '?')}  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
           f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  props={chars.get('props', 'runner defaults')}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
