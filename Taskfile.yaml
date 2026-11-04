@@ -67,9 +67,11 @@ tasks:
           *)     magic='1f8b' ;;   # gzip magic
         esac
         hex() { head -c 2 "$1" | od -An -tx1 | tr -d ' \n'; }
+        curl_opts='-fSL -C - --retry 3 --retry-delay 2'
+        if [ -t 2 ]; then curl_opts="$curl_opts --progress-bar"; else curl_opts="$curl_opts -sS"; fi
         for i in 1 2 3 4 5 6; do
           [ -f "$f" ] && [ "$(hex "$f")" != "$magic" ] && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
+          curl $curl_opts '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
           echo "download attempt $i failed, resuming..."; sleep 3
         done
         exit 1
