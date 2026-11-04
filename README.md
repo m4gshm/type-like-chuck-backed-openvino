@@ -9,6 +9,9 @@ the extension uses an MLX backend instead of this runner.
 
 ## Protocol
 
+Same contract as the MLX runner (`type-like-chuck-backed-mlx`) — the TLC
+extension speaks one protocol for both runners.
+
 Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...]`
 (`--device` defaults to GPU). `tlc-ovgenai-runner --version` prints a
 `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` event and exits 0 without loading a model.
@@ -62,6 +65,11 @@ Release-named binaries land in `build/`:
 `tlc-ovgenai-runner-win32-x64.exe`
 (Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
 
+CI (`.github/workflows/runner.yml`) builds the Windows/Linux matrix, runs the
+smoke test, and publishes the binaries as a GitHub release on `v*` tags. The TLC
+plugin imports it from the latest release (or a pinned `RUNNER_VERSION` tag)
+when packing its `.vsix`.
+
 ## Benchmark
 
 `task e2e:bench` measures compile time and inference speed (FIM prompt, 64 tokens,
@@ -109,10 +117,3 @@ cached across runs), `ttft_s` — time to first token, `tok_s` — generation
 throughput. Filter models with `E2E_SIZES="0.5B-int8-sym,1.5B-nf4"`, devices with
 `E2E_DEVICES=GPU task e2e:bench`.
 
-## Releases
-
-Prebuilt binaries are published on
-[GitHub Releases](https://github.com/m4gshm/type-like-chuck-backed-openvino/releases)
-for every `v*` tag. The TLC plugin pins the release tag it imports when
-packing its `.vsix` — a plugin build always pairs with the runner release it
-was developed against (`RUNNER_VERSION` overrides for testing newer builds).
