@@ -34,38 +34,39 @@ CACHE_DIR = os.path.join(ROOT, ".cache")
 DEFAULT_MODEL_REPO = "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov"
 DEFAULT_MODEL_DIR = os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov")
 
-# The upstream int4 models take very long to compile on NPU; excluded there.
+# Devices each model is benched on: upstream int4 compiles very slowly on NPU
+# and upstream int8 is superseded by int8-sym there; nf4 targets NPU and is skipped on GPU.
 BENCH_MODELS = [
     ("0.5B-int8", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-ov"), {"GPU", "CPU"}),
     ("1.5B-int8", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-ov"), {"GPU", "CPU"}),
     ("3B-int8", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int8-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-ov"), {"GPU", "CPU"}),
     ("0.5B-int4", "OpenVINO/Qwen2.5-Coder-0.5B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov"), False),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-ov"), {"GPU", "CPU"}),
     ("1.5B-int4", "OpenVINO/Qwen2.5-Coder-1.5B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-ov"), False),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-ov"), {"GPU", "CPU"}),
     ("3B-int4", "OpenVINO/Qwen2.5-Coder-3B-Instruct-int4-ov",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-ov"), False),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-ov"), {"GPU", "CPU"}),
     ("0.5B-nf4", "m4gshm/Qwen2.5-Coder-0.5B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-nf4-ov"), {"NPU", "CPU"}),
     ("1.5B-nf4", "m4gshm/Qwen2.5-Coder-1.5B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-nf4-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-nf4-ov"), {"NPU", "CPU"}),
     ("3B-nf4", "m4gshm/Qwen2.5-Coder-3B-nf4-sym-g-1-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-nf4-ov"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-nf4-ov"), {"NPU", "CPU"}),
     ("0.5B-int8-sym", "m4gshm/Qwen2.5-Coder-0.5B-int8-sym",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int8-sym"), {"NPU", "GPU", "CPU"}),
     ("1.5B-int8-sym", "m4gshm/Qwen2.5-Coder-1.5B-int8-sym",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int8-sym"), {"NPU", "GPU", "CPU"}),
     ("3B-int8-sym", "m4gshm/Qwen2.5-Coder-3B-int8-sym",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int8-sym"), {"NPU", "GPU", "CPU"}),
     ("0.5B-int4-sym", "m4gshm/Qwen2.5-Coder-0.5B-int4-sym-g128-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-0.5b-int4-sym"), {"NPU", "GPU", "CPU"}),
     ("1.5B-int4-sym", "m4gshm/Qwen2.5-Coder-1.5B-int4-sym-g128-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-1.5b-int4-sym"), {"NPU", "GPU", "CPU"}),
     ("3B-int4-sym", "m4gshm/Qwen2.5-Coder-3B-int4-sym-g128-se-awq",
-     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-sym"), True),
+     os.path.join(CACHE_DIR, "models", "qwen2.5-coder-3b-int4-sym"), {"NPU", "GPU", "CPU"}),
 ]
 BENCH_MAX_TOKENS = 64
 BENCH_RUNS = 2
@@ -465,18 +466,94 @@ def clear_blobs(path):
     shutil.rmtree(path)
 
 
+def _pick_host_name(version, model):
+    version = (version or "").strip()
+    model = (model or "").strip()
+    junk = {"", "none", "1.0", "0.0", "system version", "system product name",
+            "default string", "to be filled by o.e.m.", "not specified"}
+    if version.lower() not in junk and not (model and version.lower() in model.lower()):
+        return version
+    return model or version or None
+
+
+def _sys_info():
+    """Host characteristics for the bench header: computer model, CPU, RAM, OS."""
+    info = {}
+
+    def first_line(*args):
+        try:
+            return subprocess.check_output(args, text=True).strip()
+        except Exception:
+            return None
+
+    if os.name == "nt":
+        # On Lenovo, Model is the MTM code (e.g. 21Q6002KCD); the friendly name lives in Version.
+        # On ASUS, Version is often junk ("1.0") while Model carries the real name.
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "(Get-CimInstance Win32_ComputerSystemProduct).Version;"
+                         " (Get-CimInstance Win32_ComputerSystem).Model")
+        lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+        name = _pick_host_name(lines[0] if lines else None,
+                               lines[1] if len(lines) > 1 else None)
+        if name:
+            info["host"] = name
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "(Get-CimInstance Win32_Processor).Name")
+        if out:
+            info["cpu"] = out.splitlines()[0].strip()
+        out = first_line("powershell", "-NoProfile", "-Command",
+                         "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)")
+        if out and out.isdigit():
+            info["ram"] = f"{out} GB"
+        try:
+            # ProductName in the registry is not localized, unlike Get-CimInstance Caption
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as k:
+                name = winreg.QueryValueEx(k, "ProductName")[0]
+                display = winreg.QueryValueEx(k, "DisplayVersion")[0]
+                # ProductName still says Windows 10 on Windows 11; the build number tells the truth
+                build = int(winreg.QueryValueEx(k, "CurrentBuildNumber")[0])
+                if name.startswith("Windows 10") and build >= 22000:
+                    name = name.replace("Windows 10", "Windows 11")
+                info["os"] = f"{name} {display}"
+        except Exception:
+            pass
+    else:
+        try:
+            with open("/sys/devices/virtual/dmi/id/product_name") as f:
+                info["host"] = f.read().strip()
+        except Exception:
+            pass
+        out = first_line("sh", "-c", "lscpu | sed -n 's/^Model name:\\s*//p'")
+        if out:
+            info["cpu"] = out.splitlines()[0].strip()
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        info["ram"] = f"{int(line.split()[1]) // (1 << 20)} GB"
+                        break
+        except Exception:
+            pass
+        out = first_line("sh", "-c", ". /etc/os-release && echo $PRETTY_NAME")
+        if out:
+            info["os"] = out
+    return info
+
+
 def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
     """Run the bench for one device; returns (characteristics, rows) without
     printing the table — the caller decides when to print it."""
     if device == "auto":
         fail("bench needs an explicit device (NPU, GPU or CPU)")
     rows = []
-    chars = {"device": device}
-    for name, repo, out, on_npu in BENCH_MODELS:
+    chars = {"device": device, **_sys_info()}
+    for name, repo, out, devices in BENCH_MODELS:
         if sizes and name not in sizes:
             continue
-        if device == "NPU" and not on_npu and not (sizes and name in sizes):
-            print(f"bench: skipping {name} on NPU (slow int4 compile)", flush=True)
+        if device not in devices and not (sizes and name in sizes):
+            print(f"bench: skipping {name} on {device}", flush=True)
             continue
         out = os.environ.get(f"E2E_{name.replace('.', '_').replace('-', '_')}_DIR", out)
         if not os.path.isfile(os.path.join(out, "openvino_model.xml")):
@@ -496,9 +573,8 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         for i in range(runs):
             gens.append(bench_generate(r, i))
         r.close()
-        chars = {"device": device,
-                 "name": ready.get("deviceName") or "?",
-                 "ctx": ready.get("ctx")}
+        chars.update({"name": ready.get("deviceName") or "?",
+                      "ctx": ready.get("ctx")})
         ttft, total, tokens = gens[-1]  # steady state
         rows.append((label, compile_s, ttft, total, tokens))
         print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
@@ -508,7 +584,8 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
 
 def print_bench_table(chars, rows, runs=BENCH_RUNS):
     """Device characteristics header followed by the results table."""
-    print(f"\n== {chars['device']} ==  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
+    print(f"\n== {chars['device']} ==  host={chars.get('host', '?')}  cpu={chars.get('cpu', '?')}  "
+          f"ram={chars.get('ram', '?')}  os={chars.get('os', '?')}  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
           f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  props={chars.get('props', 'runner defaults')}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")

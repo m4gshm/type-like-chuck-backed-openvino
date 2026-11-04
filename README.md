@@ -9,6 +9,9 @@ the extension uses an MLX backend instead of this runner.
 
 ## Protocol
 
+Same contract as the MLX runner (`type-like-chuck-backed-mlx`) — the TLC
+extension speaks one protocol for both runners.
+
 Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...]`
 (`--device` defaults to GPU). `tlc-ovgenai-runner --version` prints a
 `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` event and exits 0 without loading a model.
@@ -62,10 +65,92 @@ Release-named binaries land in `build/`:
 `tlc-ovgenai-runner-win32-x64.exe`
 (Windows requires a native Windows host or CI — OpenVINO ships MSVC libs).
 
-## Releases
+CI (`.github/workflows/runner.yml`) builds the Windows/Linux matrix, runs the
+smoke test, and publishes the binaries as a GitHub release on `v*` tags. The TLC
+plugin imports it from the latest release (or a pinned `RUNNER_VERSION` tag)
+when packing its `.vsix`.
 
-Prebuilt binaries are published on
-[GitHub Releases](https://github.com/m4gshm/type-like-chuck-backed-openvino/releases)
-for every `v*` tag. The TLC plugin pins the release tag it imports when
-packing its `.vsix` — a plugin build always pairs with the runner release it
-was developed against (`RUNNER_VERSION` overrides for testing newer builds).
+## Benchmark
+
+`task e2e:bench` measures compile time and inference speed (FIM prompt, 64 tokens,
+steady state of 2 runs) across the Qwen2.5-Coder quantization line on the selected
+devices (NPU runs the m4gshm nf4/int8-sym/int4-sym models; the upstream int8/int4
+and the m4gshm sym models run on GPU/CPU).
+
+### ASUS EXPERTBOOK B9406CAA  (Intel(R) Core(TM) Ultra X7 358H, 63 GB, Windows 11 Pro 26H2)
+
+#### NPU — Intel(R) AI Boost  (ctx=0, runs=2, maxTokens=64, props=runner defaults)
+
+```text
+model          compile_s  ttft_s  gen_s  tokens  tok_s
+0.5B-nf4            0.7    0.06   0.18     16    87.0
+1.5B-nf4            1.7    0.10   0.94     51    54.3
+3B-nf4              2.8    0.18   1.57     44    28.1
+0.5B-int8-sym       1.3    0.04   0.57     51    89.4
+1.5B-int8-sym       2.1    0.12   1.37     51    37.3
+3B-int8-sym         4.4    0.16   1.55     27    17.4
+0.5B-int4-sym       0.8    0.08   0.49     53   108.0
+1.5B-int4-sym       1.5    0.16   1.06     51    48.1
+3B-int4-sym         2.8    0.31   1.16     32    27.5
+```
+
+#### GPU — Intel(R) Arc(TM) B390 GPU (iGPU)  (ctx=0, runs=2, maxTokens=64, props=runner defaults)
+
+```text
+model          compile_s  ttft_s  gen_s  tokens  tok_s
+0.5B-int8           0.7    0.04   0.49     43    87.4
+1.5B-int8           1.1    0.06   1.15     49    42.8
+3B-int8             2.1    0.10   0.41     11    26.9
+0.5B-int4           0.7    0.02   0.37     43   116.6
+1.5B-int4           0.9    0.04   0.29     20    69.7
+3B-int4             1.5    0.08   0.27     11    41.3
+0.5B-int8-sym       0.7    0.02   0.43     51   118.8
+1.5B-int8-sym       1.0    0.06   1.09     51    46.9
+3B-int8-sym         1.7    0.04   1.18     27    22.8
+0.5B-int4-sym       0.6    0.02   0.35     45   129.5
+1.5B-int4-sym       0.8    0.04   0.68     51    75.5
+3B-int4-sym         1.3    0.08   1.29     53    41.1
+```
+
+### ThinkPad X9-15 Gen 1  (Intel(R) Core(TM) Ultra 7 258V, 32 GB, Windows 11 Home 26H2)
+
+#### NPU — Intel(R) AI Boost  (ctx=0, runs=2, maxTokens=64, props=runner defaults)
+
+```text
+model          compile_s  ttft_s  gen_s  tokens  tok_s
+0.5B-nf4            0.9    0.11   0.39     16    40.9
+1.5B-nf4            1.7    0.20   1.67     56    33.5
+3B-nf4              3.2    0.28   2.92     43    14.7
+0.5B-int8-sym       1.1    0.08   1.11     51    46.0
+1.5B-int8-sym       2.3    0.24   2.77     51    18.4
+3B-int8-sym         4.8    0.28   2.62     27    10.3
+0.5B-int4-sym       1.0    0.17   1.16     53    45.8
+1.5B-int4-sym       1.8    0.30   2.11     51    24.2
+3B-int4-sym         3.3    0.48   2.51     35    13.9
+```
+
+#### GPU — Intel(R) Arc(TM) 140V GPU (iGPU)  (ctx=0, runs=2, maxTokens=64, props=runner defaults)
+
+```text
+model          compile_s  ttft_s  gen_s  tokens  tok_s
+0.5B-int8           0.8    0.03   0.61     43    70.5
+1.5B-int8           1.2    0.08   1.56     49    31.3
+3B-int8             2.2    0.14   0.56     11    19.6
+0.5B-int4           0.7    0.05   0.52     43    83.3
+1.5B-int4           1.0    0.06   0.42     20    47.4
+3B-int4             1.7    0.11   0.38     11    29.3
+0.5B-int8-sym       0.8    0.03   0.61     51    83.7
+1.5B-int8-sym       1.2    0.08   1.58     51    32.3
+3B-int8-sym         2.2    0.06   1.64     27    16.5
+0.5B-int4-sym       0.6    0.05   0.48     45    93.0
+1.5B-int4-sym       1.0    0.06   1.03     51    49.5
+3B-int4-sym         1.6    0.11   1.78     53    29.8
+```
+
+`compile_s` — time to the `ready` event (includes OpenVINO graph compilation; the
+upstream int4 (slow compile) and int8 (superseded by int8-sym) models are excluded
+on NPU, their compiled blobs are cached across runs; nf4 is excluded on GPU),
+`ttft_s` — time to first token, `tok_s` — generation
+throughput. Filter models with `E2E_SIZES="0.5B-int8-sym,1.5B-nf4"`, devices with
+`E2E_DEVICES=GPU task e2e:bench`.
+

@@ -67,9 +67,11 @@ tasks:
           *)     magic='1f8b' ;;   # gzip magic
         esac
         hex() { head -c 2 "$1" | od -An -tx1 | tr -d ' \n'; }
+        curl_opts='-fSL -C - --retry 3 --retry-delay 2'
+        if [ -t 2 ]; then curl_opts="$curl_opts --progress-bar"; else curl_opts="$curl_opts -sS"; fi
         for i in 1 2 3 4 5 6; do
           [ -f "$f" ] && [ "$(hex "$f")" != "$magic" ] && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
+          curl $curl_opts '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
           echo "download attempt $i failed, resuming..."; sleep 3
         done
         exit 1
@@ -230,11 +232,11 @@ tasks:
         python3 scripts/e2e.py bench --devices '{{.E2E_DEVICES | default "NPU GPU"}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
 
   e2e:bench:nf4:
-    desc: 'Bench the nf4 models on NPU and GPU for a like-for-like quantization comparison'
+    desc: 'Bench the nf4 models on NPU (nf4 is excluded from the GPU bench)'
     deps: [models:nf4]
     cmds:
       - task: e2e:bench
-        vars: { E2E_DEVICES: 'NPU GPU', E2E_SIZES: '0.5B-nf4,1.5B-nf4,3B-nf4' }
+        vars: { E2E_DEVICES: NPU, E2E_SIZES: '0.5B-nf4,1.5B-nf4,3B-nf4' }
 
   e2e:bench:npu:
     desc: 'Bench on NPU only (same options as e2e:bench via E2E_SIZES/E2E_PROPS/E2E_COLD)'
