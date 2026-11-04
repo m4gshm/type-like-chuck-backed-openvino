@@ -475,24 +475,7 @@ def _sys_info():
         except Exception:
             return None
 
-    if sys.platform == "darwin":
-        try:
-            out = subprocess.check_output(["system_profiler", "SPHardwareDataType"], text=True)
-            for line in out.splitlines():
-                line = line.strip()
-                if line.startswith("Model Name:"):
-                    info["host"] = line.split(":", 1)[1].strip()
-                elif line.startswith("Chip:"):
-                    info["cpu"] = line.split(":", 1)[1].strip()
-        except Exception:
-            pass
-        ram = first_line("sysctl", "-n", "hw.memsize")
-        if ram and ram.isdigit():
-            info["ram"] = f"{int(ram) // (1 << 30)} GB"
-        ver = first_line("sw_vers", "-productVersion")
-        if ver:
-            info["os"] = f"macOS {ver}"
-    elif os.name == "nt":
+    if os.name == "nt":
         out = first_line("powershell", "-NoProfile", "-Command",
                          "(Get-CimInstance Win32_ComputerSystem).Model")
         if out:
@@ -505,10 +488,20 @@ def _sys_info():
                          "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)")
         if out and out.isdigit():
             info["ram"] = f"{out} GB"
-        out = first_line("powershell", "-NoProfile", "-Command",
-                         "(Get-CimInstance Win32_OperatingSystem).Caption")
-        if out:
-            info["os"] = out
+        try:
+            # ProductName in the registry is not localized, unlike Get-CimInstance Caption
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as k:
+                name = winreg.QueryValueEx(k, "ProductName")[0]
+                display = winreg.QueryValueEx(k, "DisplayVersion")[0]
+                # ProductName still says Windows 10 on Windows 11; the build number tells the truth
+                build = int(winreg.QueryValueEx(k, "CurrentBuildNumber")[0])
+                if name.startswith("Windows 10") and build >= 22000:
+                    name = name.replace("Windows 10", "Windows 11")
+                info["os"] = f"{name} {display}"
+        except Exception:
+            pass
     else:
         try:
             with open("/sys/devices/virtual/dmi/id/product_name") as f:
