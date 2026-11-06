@@ -433,11 +433,11 @@ def test_queue(model):
 
 # ---------------------------------------------------------------- bench
 
-def bench_generate(r, run_id):
+def bench_generate(r, run_id, prompt):
     """One fixed-length FIM generation; returns (ttft_s, total_s, tokens)."""
     start = len(r.events)
     t0 = time.monotonic()
-    r.send({"type": "generate", "id": run_id, "prompt": FIM_PROMPT, "maxTokens": BENCH_MAX_TOKENS})
+    r.send({"type": "generate", "id": run_id, "prompt": prompt, "maxTokens": BENCH_MAX_TOKENS})
     r.wait_for(lambda e: e.get("type") == "token", timeout=120, since=start)
     ttft = time.monotonic() - t0
     done = r.wait_for(lambda e: e.get("type") == "done", timeout=300, since=start)
@@ -542,13 +542,14 @@ def _sys_info():
     return info
 
 
-def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
+def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
     """Run the bench for one device; returns (characteristics, rows) without
     printing the table — the caller decides when to print it."""
     if device == "auto":
         fail("bench needs an explicit device (NPU, GPU or CPU)")
+    prompt = fixture_fim_prompt() if prompt_kind == "fixture" else FIM_PROMPT
     rows = []
-    chars = {"device": device, **_sys_info()}
+    chars = {"device": device, **_sys_info(), "prompt_chars": len(prompt)}
     for name, repo, out, devices in BENCH_MODELS:
         if sizes and name not in sizes:
             continue
@@ -571,7 +572,7 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
         compile_s = time.monotonic() - t0
         gens = []
         for i in range(runs):
-            gens.append(bench_generate(r, i))
+            gens.append(bench_generate(r, i, prompt))
         r.close()
         chars.update({"name": ready.get("deviceName") or "?",
                       "ctx": ready.get("ctx")})
@@ -585,26 +586,27 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
 def print_bench_table(chars, rows, runs=BENCH_RUNS):
     """Device characteristics header followed by the results table."""
     print(f"\n== {chars['device']} ==  host={chars.get('host', '?')}  cpu={chars.get('cpu', '?')}  "
-          f"ram={chars.get('ram', '?')}  os={chars.get('os', '?')}  name={chars.get('name', '?')}  ctx={chars.get('ctx', '?')}  "
-          f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  props={chars.get('props', 'runner defaults')}")
+          f"ram={chars.get('ram', '?')}  os={chars.get('os', '?')}  name={chars.get('name', '?')} ctx={chars.get('ctx', '?')}  "
+          f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  prompt={chars.get('prompt_chars', '?')} chars  "
+          f"props={chars.get('props', 'runner defaults')}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
     for name, c, ttft, total, tokens in rows:
         print(f"{name:<{w}} {c:>9.1f} {ttft:>7.2f} {total:>6.2f} {tokens:>6} {tokens/total:>7.1f}")
 
 
-def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None):
+def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
     """Bench a single device and print its table (kept for --device)."""
-    chars, rows = bench_run(device, props, runs, cold, sizes)
+    chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind)
     chars["props"] = props if props else "runner defaults"
     print_bench_table(chars, rows, runs)
 
 
-def bench_devices(devices, props, runs=BENCH_RUNS, cold=False, sizes=None):
+def bench_devices(devices, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
     """Bench every device, then print all tables with device characteristics."""
     results = []
     for device in devices:
-        chars, rows = bench_run(device, props, runs, cold, sizes)
+        chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind)
         chars["props"] = props if props else "runner defaults"
         results.append((chars, rows))
     print("\n=== bench results ===")
@@ -655,6 +657,82 @@ def download_model(out_dir, repo=DEFAULT_MODEL_REPO):
 
 
 # ---------------------------------------------------------------- manual client
+
+# ---------------------------------------------------------------- real file FIM
+
+# The plugin's qwen2 template stop list and context clamps (src/templates/builtins.ts).
+QWEN2_RESERVED = ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|fim_pad|>",
+                  "<|repo_name|>", "<|file_sep|>", "<|end_of_text|>", "<|endoftext|>"]
+PLUGIN_PREFIX_MAX = 8000
+PLUGIN_SUFFIX_MAX = 2000
+
+
+def mask_reserved(text):
+    for token in QWEN2_RESERVED:
+        text = text.replace(token, token[0] + " " + token[1:])
+    return text
+
+
+def fixture_fim_prompt():
+    """Plugin-shaped FIM prompt over the bundled fixture: the cursor sits on the
+    whitespace-only line 96 inside a var block, so the prefill is a realistic
+    ~1.5–2k tokens (prefix/suffix clamps mirror the plugin defaults)."""
+    with open(os.path.join(ROOT, "scripts", "fixtures", "api_test.go"), encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    li, col = 95, 2
+    prefix = mask_reserved("\n".join(lines[:li]) + "\n" + lines[li][:col])[-PLUGIN_PREFIX_MAX:]
+    suffix = mask_reserved(lines[li][col:] + "\n" + "\n".join(lines[li + 1:]))[:PLUGIN_SUFFIX_MAX]
+    return "<|fim_prefix|>" + prefix + "<|fim_suffix|>" + suffix + "<|fim_middle|>"
+
+
+def real_file(model, file, line, column, max_tokens, device="auto", props=()):
+    """Raw FIM against a real source file at a 1-based line/column cursor.
+
+    Mirrors the plugin's prompt (qwen2 markers, 8000/2000 clamp, reserved-token
+    masking) but does NOT send a newline stop — the point is to observe the
+    backend's natural (possibly multi-line) completion.
+    """
+    with open(file, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    li = max(0, min(line - 1, len(lines) - 1))
+    col = min(max(1, column) - 1, len(lines[li]))
+    prefix = mask_reserved("\n".join(lines[:li]) + "\n" + lines[li][:col])[-PLUGIN_PREFIX_MAX:]
+    suffix = mask_reserved(lines[li][col:] + "\n" + "\n".join(lines[li + 1:]))[:PLUGIN_SUFFIX_MAX]
+    prompt = "<|fim_prefix|>" + prefix + "<|fim_suffix|>" + suffix + "<|fim_middle|>"
+    next_line = lines[li + 1] if li + 1 < len(lines) else ""
+
+    r = Runner(model=model, device=device, props=props)
+    expect_ready(r, model)
+    r.send({"type": "generate", "id": 1, "prompt": prompt, "maxTokens": max_tokens, "stop": QWEN2_RESERVED})
+    done = r.wait_for(lambda e: e.get("type") == "done", timeout=300)
+    tokens = [e for e in r.events if e.get("type") == "token"]
+    text = "".join(t["text"] for t in tokens)
+    r.close()
+
+    completion_lines = text.split("\n")
+    print("\n" + "=" * 72)
+    print(f"file: {file} @ {line}:{column} (cursor line: {lines[li][:col]!r})")
+    print(f"next line in file: {next_line!r}")
+    print(f"completion: {len(text)} chars, {len(completion_lines)} lines, finishReason={done.get('finishReason') if done else 'TIMEOUT'}")
+    stripped = text.strip()
+    next_trim = next_line.strip()
+    if not stripped:
+        print("overlap: empty completion")
+    elif stripped == next_trim:
+        print("overlap: completion duplicates the next line exactly")
+    elif next_trim and stripped.startswith(next_trim):
+        print(f"overlap: completion extends the next line by {stripped[len(next_trim):]!r}")
+    else:
+        common = os.path.commonprefix([stripped, next_trim])
+        share = round(100 * len(common) / max(1, len(stripped)))
+        print(f"overlap: common prefix with the next line is {len(common)} chars (~{share}% of the completion): {common!r}")
+    print("-" * 72)
+    print(text)
+    print("=" * 72)
+    ok = check(done is not None, "done event received")
+    ok &= check(not any(tok in text for tok in QWEN2_RESERVED), "no FIM control tokens leak into output")
+    return ok
+
 
 def manual_client(model, device="auto", props=()):
     if not model:
@@ -745,6 +823,15 @@ def main():
         p.add_argument("--device", default="auto", help="NPU, GPU, CPU or auto (NPU -> GPU -> CPU)")
         p.add_argument("--prop", action="append", default=[],
                        help="runner OpenVINO property KEY=VALUE, repeatable")
+    p = cmd.add_parser("real-file")
+    p.add_argument("--file", required=True, help="source file to complete")
+    p.add_argument("--line", type=int, default=1, help="1-based cursor line")
+    p.add_argument("--column", type=int, default=1, help="1-based cursor column")
+    p.add_argument("--max-tokens", type=int, default=256)
+    p.add_argument("--model", default=os.environ.get("MODEL_DIR"), help="OpenVINO IR model directory")
+    p.add_argument("--device", default="auto", help="NPU, GPU, CPU or auto (NPU -> GPU -> CPU)")
+    p.add_argument("--prop", action="append", default=[],
+                   help="runner OpenVINO property KEY=VALUE, repeatable")
     p = cmd.add_parser("download-model")
     p.add_argument("--repo", default=DEFAULT_MODEL_REPO)
     p.add_argument("--out", default=DEFAULT_MODEL_DIR)
@@ -757,6 +844,8 @@ def main():
     p.add_argument("--runs", type=int, default=BENCH_RUNS, help="generation runs per model (steady state is reported)")
     p.add_argument("--cold", action="store_true",
                    help="clear the NPU compiled-blob cache (.cache/npu-blobs) before each model")
+    p.add_argument("--prompt", choices=("fixture", "tiny"), default="fixture",
+                   help="fixture = plugin-shaped FIM from the bundled fixture (~1.5–2k token prefill); tiny = one-line FIM")
     p.add_argument("--sizes", default=None,
                    help="comma-separated model sizes to bench (default: all BENCH_MODELS; on NPU the slow-compiling upstream int4 models are skipped unless listed explicitly; per-model dir override E2E_<name with . and - replaced by _>_DIR, e.g. E2E_0_5B_int8_DIR)")
     args = ap.parse_args()
@@ -767,12 +856,15 @@ def main():
     elif args.cmd == "bench":
         if args.devices:
             bench_devices(args.devices.split(), args.prop, args.runs, args.cold,
-                          args.sizes.split(",") if args.sizes else None)
+                          args.sizes.split(",") if args.sizes else None, args.prompt)
         else:
             bench_compile(args.device, args.prop, args.runs, args.cold,
-                          args.sizes.split(",") if args.sizes else None)
+                          args.sizes.split(",") if args.sizes else None, args.prompt)
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
+    elif args.cmd == "real-file":
+        sys.exit(0 if real_file(args.model, args.file, args.line, args.column,
+                                args.max_tokens, args.device, args.prop) else 1)
     else:
         run_suite(args.model, args.device, args.prop)
 

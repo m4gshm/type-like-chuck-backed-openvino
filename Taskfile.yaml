@@ -166,6 +166,21 @@ tasks:
     cmds:
       - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
 
+  e2e:real-file:
+    desc: 'Raw FIM against the bundled fixture (FILE, LINE, COLUMN override it) — observes the natural, possibly multi-line completion'
+    deps: [build, model]
+    env:
+      E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
+    cmds:
+      - python3 scripts/e2e.py real-file --file '{{.FILE | default "scripts/fixtures/api_test.go"}}' --line '{{.LINE | default "96"}}' --column '{{.COLUMN | default "9"}}' --max-tokens '{{.MAX_TOKENS | default "256"}}' --model '{{.MODEL_DIR}}' --device '{{.DEVICE | default "auto"}}'
+
+  e2e:real-file:npu:
+    desc: 'real-file on NPU over the nf4 model (long ready timeout: first load compiles the graph)'
+    deps: [models:nf4]
+    cmds:
+      - task: e2e:real-file
+        vars: { DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov' }
+
   e2e:npu:
     desc: 'Full E2E suite on NPU over the nf4 models (long ready timeout: first load compiles the graph)'
     deps: [models:nf4]

@@ -70,12 +70,26 @@ smoke test, and publishes the binaries as a GitHub release on `v*` tags. The TLC
 plugin imports it from the latest release (or a pinned `RUNNER_VERSION` tag)
 when packing its `.vsix`.
 
+## Real file experiment
+
+`task e2e:real-file` runs raw FIM against the bundled fixture
+(`scripts/fixtures/api_test.go`, cursor at line 96, column 9) with the plugin's
+prompt shape (qwen2 markers, 8000/2000 clamp, reserved-token masking) but no
+newline stop — it shows the backend's natural, possibly multi-line completion
+plus an overlap report against the line after the cursor. `FILE`, `LINE`,
+`COLUMN`, `MAX_TOKENS`, `MODEL_DIR`, `DEVICE` override the defaults;
+`task e2e:real-file:npu` pins NPU with the nf4 model (first load compiles the
+graph — long ready timeout).
+
 ## Benchmark
 
-`task e2e:bench` measures compile time and inference speed (FIM prompt, 64 tokens,
-steady state of 2 runs) across the Qwen2.5-Coder quantization line on the selected
-devices (NPU runs the m4gshm nf4/int8-sym/int4-sym models; the upstream int8/int4
-and the m4gshm sym models run on GPU/CPU).
+`task e2e:bench` measures compile time and inference speed across the Qwen2.5-Coder
+quantization line on the selected devices (NPU runs the m4gshm nf4/int8-sym/int4-sym
+models; the upstream int8/int4 and the m4gshm sym models run on GPU/CPU). The
+default prompt is a plugin-shaped FIM over the bundled fixture (4815 chars ≈ 1.5–2k
+token prefill — what the plugin actually sends); `--prompt tiny` switches to the
+one-line FIM. 64 generated tokens, steady state of 2 runs (tables below: an earlier
+run with the one-line prompt).
 
 ### ASUS EXPERTBOOK B9406CAA  (Intel(R) Core(TM) Ultra X7 358H, 63 GB, Windows 11 Pro 26H2)
 
