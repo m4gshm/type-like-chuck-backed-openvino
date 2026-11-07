@@ -134,7 +134,10 @@ class Runner:
             args += ["--model", model, "--device", device or RUNNER_DEVICE]
             if ctx > 0:
                 args += ["--ctx", str(ctx)]
-            args += [x for kv in (RUNNER_PROPS if props is None else props) for x in ("--prop", kv)]
+            props = list(RUNNER_PROPS if props is None else props)
+            if (device or RUNNER_DEVICE) == "NPU" and not any(p.startswith("CACHE_DIR=") for p in props):
+                props.append(f"CACHE_DIR={blob_cache_dir(model, props)}")
+            args += [x for kv in props for x in ("--prop", kv)]
         if prompt_cache:
             args += ["--prompt-cache"]
         self.proc = subprocess.Popen(

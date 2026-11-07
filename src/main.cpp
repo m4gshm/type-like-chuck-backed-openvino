@@ -225,7 +225,12 @@ private:
             const int nativeReason = results.finish_reasons.empty() ? 0
                                                                     : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
+#if OPENVINO_VERSION_MAJOR > 2026 || (OPENVINO_VERSION_MAJOR == 2026 && OPENVINO_VERSION_MINOR > 4)
             const size_t cachedTokens = results.perf_metrics.get_num_prefix_cache_hit_tokens();
+#else
+            // The pinned 2026.4 runtime has no prefix-cache metric getter.
+            const size_t cachedTokens = 0;
+#endif
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
             emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason},
                       {"promptTokens", promptTokens}, {"cachedTokens", cachedTokens}});
