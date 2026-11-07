@@ -935,8 +935,9 @@ def main():
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
     elif args.cmd == "real-file":
+        select_device(args.model, args.device, args.prop)
         sys.exit(0 if real_file(args.model, args.file, args.line, args.column,
-                                args.max_tokens, args.device, args.prop) else 1)
+                                args.max_tokens, RUNNER_DEVICE, args.prop) else 1)
     else:
         run_suite(args.model, args.device, args.prop)
 
