@@ -35,7 +35,9 @@ Events on stdout (one JSON object per line):
 - `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` for `--version` (before any model load);
 - `{"type":"ready","model":...,"device":...,"ctx":N}` after the pipeline loads;
 - `{"type":"token","text":"..."}` per generated piece;
-- `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel"}`;
+- `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel","promptTokens":N}`
+  (prompt token count from the runner's tokenizer; omitted on the cancel paths
+  that answer without generating);
 - `{"type":"error","id":N|null,"message":"..."}`.
 
 Requests on stdin: `{"type":"generate","id":N,"prompt":"...","maxTokens":N,"stop":[...]}`,
@@ -86,9 +88,12 @@ graph — long ready timeout).
 `task e2e:bench` measures compile time and inference speed across the Qwen2.5-Coder
 quantization line on the selected devices (NPU runs the m4gshm nf4/int8-sym/int4-sym
 models; the upstream int8/int4 and the m4gshm sym models run on GPU/CPU). The
-default prompt is a plugin-shaped FIM over the bundled fixture (4815 chars ≈ 1.5–2k
-token prefill — what the plugin actually sends); `--prompt tiny` switches to the
-one-line FIM. 64 generated tokens, steady state of 2 runs (tables below: an earlier
+default prompt is a plugin-shaped FIM over the bundled fixture (4815 chars = 2773
+prefix + 2000 suffix ≈ 1.7k token prefill — what the plugin actually sends);
+`--prompt tiny` switches to the one-line FIM. 64 generated tokens, steady state
+of 2 runs. `ttft_s` carries the prefill; `gen_s`/`tok_s` are decode-only
+(end-to-end first suggestion ≈ ttft_s + gen_s); the header reports the measured
+prompt token count from the runner's `done` event (tables below: an earlier
 run with the one-line prompt).
 
 ### ASUS EXPERTBOOK B9406CAA  (Intel(R) Core(TM) Ultra X7 358H, 63 GB, Windows 11 Pro 26H2)
@@ -164,7 +169,8 @@ model          compile_s  ttft_s  gen_s  tokens  tok_s
 `compile_s` — time to the `ready` event (includes OpenVINO graph compilation; the
 upstream int4 (slow compile) and int8 (superseded by int8-sym) models are excluded
 on NPU, their compiled blobs are cached across runs; nf4 is excluded on GPU),
-`ttft_s` — time to first token, `tok_s` — generation
-throughput. Filter models with `E2E_SIZES="0.5B-int8-sym,1.5B-nf4"`, devices with
+`ttft_s` — time to first token (prompt token count comes from the runner's
+`done` event), `tok_s` — decode throughput. Filter models with
+`E2E_SIZES="0.5B-int8-sym,1.5B-nf4"`, devices with
 `E2E_DEVICES=GPU task e2e:bench`.
 

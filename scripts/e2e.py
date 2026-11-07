@@ -445,7 +445,7 @@ def bench_generate(r, run_id, prompt):
     tokens = sum(1 for e in r.events[start:] if e.get("type") == "token")
     if done.get("finishReason") not in ("length", "stop"):
         raise AssertionError(f"bench run {run_id} failed: {done}")
-    return ttft, total, tokens
+    return ttft, total, tokens, done.get("promptTokens")
 
 
 def blob_cache_dir(model_dir, props):
@@ -544,12 +544,14 @@ def _sys_info():
 
 def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
     """Run the bench for one device; returns (characteristics, rows) without
-    printing the table — the caller decides when to print it."""
+    printing the table — the caller decides when to print it. ttft_s carries
+    prefill; gen_s/tok_s are decode-only."""
     if device == "auto":
         fail("bench needs an explicit device (NPU, GPU or CPU)")
-    prompt = fixture_fim_prompt() if prompt_kind == "fixture" else FIM_PROMPT
+    prompt, prefix_chars, suffix_chars = fixture_prompt_parts() if prompt_kind == "fixture" else (FIM_PROMPT, len(FIM_PROMPT), 0)
     rows = []
-    chars = {"device": device, **_sys_info(), "prompt_chars": len(prompt)}
+    chars = {"device": device, **_sys_info(), "prompt_chars": len(prompt),
+             "prefix_chars": prefix_chars, "suffix_chars": suffix_chars}
     for name, repo, out, devices in BENCH_MODELS:
         if sizes and name not in sizes:
             continue
@@ -576,10 +578,12 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kin
         r.close()
         chars.update({"name": ready.get("deviceName") or "?",
                       "ctx": ready.get("ctx")})
-        ttft, total, tokens = gens[-1]  # steady state
-        rows.append((label, compile_s, ttft, total, tokens))
+        ttft, total, tokens, prompt_tokens = gens[-1]  # steady state
+        decode = max(total - ttft, 1e-3)
+        chars["prompt_tokens"] = prompt_tokens
+        rows.append((label, compile_s, ttft, decode, tokens))
         print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
-              f"gen={total:.2f}s ({tokens} tok, {tokens/total:.1f} tok/s)", flush=True)
+              f"decode={decode:.2f}s ({tokens} tok, {tokens/decode:.1f} tok/s)", flush=True)
     return chars, rows
 
 
@@ -587,7 +591,9 @@ def print_bench_table(chars, rows, runs=BENCH_RUNS):
     """Device characteristics header followed by the results table."""
     print(f"\n== {chars['device']} ==  host={chars.get('host', '?')}  cpu={chars.get('cpu', '?')}  "
           f"ram={chars.get('ram', '?')}  os={chars.get('os', '?')}  name={chars.get('name', '?')} ctx={chars.get('ctx', '?')}  "
-          f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  prompt={chars.get('prompt_chars', '?')} chars  "
+          f"runs={runs}  maxTokens={BENCH_MAX_TOKENS}  "
+          f"prompt={chars.get('prompt_chars', '?')} chars = {chars.get('prefix_chars', '?')} prefix + "
+          f"{chars.get('suffix_chars', '?')} suffix, {chars.get('prompt_tokens', '?')} tokens  "
           f"props={chars.get('props', 'runner defaults')}")
     w = max((len(name) for name, *_rest in rows), default=len("model"))
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
@@ -673,16 +679,21 @@ def mask_reserved(text):
     return text
 
 
-def fixture_fim_prompt():
+def fixture_prompt_parts():
     """Plugin-shaped FIM prompt over the bundled fixture: the cursor sits on the
-    whitespace-only line 96 inside a var block, so the prefill is a realistic
-    ~1.5–2k tokens (prefix/suffix clamps mirror the plugin defaults)."""
+    whitespace-only line 96 inside a var block, and the prefix/suffix clamps
+    mirror the plugin defaults. Returns (prompt, prefix_chars, suffix_chars)."""
     with open(os.path.join(ROOT, "scripts", "fixtures", "api_test.go"), encoding="utf-8") as f:
         lines = f.read().split("\n")
     li, col = 95, 2
     prefix = mask_reserved("\n".join(lines[:li]) + "\n" + lines[li][:col])[-PLUGIN_PREFIX_MAX:]
     suffix = mask_reserved(lines[li][col:] + "\n" + "\n".join(lines[li + 1:]))[:PLUGIN_SUFFIX_MAX]
-    return "<|fim_prefix|>" + prefix + "<|fim_suffix|>" + suffix + "<|fim_middle|>"
+    return ("<|fim_prefix|>" + prefix + "<|fim_suffix|>" + suffix + "<|fim_middle|>",
+            len(prefix), len(suffix))
+
+
+def fixture_fim_prompt():
+    return fixture_prompt_parts()[0]
 
 
 def real_file(model, file, line, column, max_tokens, device="auto", props=()):
@@ -713,7 +724,9 @@ def real_file(model, file, line, column, max_tokens, device="auto", props=()):
     print("\n" + "=" * 72)
     print(f"file: {file} @ {line}:{column} (cursor line: {lines[li][:col]!r})")
     print(f"next line in file: {next_line!r}")
-    print(f"completion: {len(text)} chars, {len(completion_lines)} lines, finishReason={done.get('finishReason') if done else 'TIMEOUT'}")
+    print(f"completion: {len(text)} chars, {len(completion_lines)} lines, "
+          f"finishReason={done.get('finishReason') if done else 'TIMEOUT'}, "
+          f"prompt={done.get('promptTokens') if done else '?'} tokens")
     stripped = text.strip()
     next_trim = next_line.strip()
     if not stripped:

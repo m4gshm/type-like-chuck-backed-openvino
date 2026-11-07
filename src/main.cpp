@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 #include <openvino/genai/generation_config.hpp>
 #include <openvino/genai/llm_pipeline.hpp>
+#include <openvino/genai/tokenizer.hpp>
 #include <openvino/genai/streamer_base.hpp>
 #include <openvino/runtime/core.hpp>
 #include <openvino/runtime/properties.hpp>
@@ -86,7 +87,9 @@ void emit(const json& event) {
 
 class Runner {
 public:
-    explicit Runner(std::unique_ptr<ov::genai::LLMPipeline> pipeline) : pipeline_(std::move(pipeline)) {}
+    explicit Runner(std::unique_ptr<ov::genai::LLMPipeline> pipeline,
+                    std::unique_ptr<ov::genai::Tokenizer> tokenizer)
+        : pipeline_(std::move(pipeline)), tokenizer_(std::move(tokenizer)) {}
 
     void run() {
         worker_ = std::thread([this] { processQueue(); });
@@ -199,6 +202,13 @@ private:
         config.stop_strings = std::set<std::string>(request.stop.begin(), request.stop.end());
         config.apply_chat_template = false;
         std::size_t tokens = 0;
+        size_t promptTokens = 0;
+        if (tokenizer_) {
+            try {
+                promptTokens = tokenizer_->encode(request.prompt).input_ids.get_shape().at(1);
+            } catch (const std::exception&) {
+            }
+        }
         try {
             const ov::genai::DecodedResults results = pipeline_->generate(
                 request.prompt,
@@ -215,7 +225,7 @@ private:
                                                                     : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
-            emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}});
+            emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}, {"promptTokens", promptTokens}});
         } catch (const std::exception& e) {
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
             emit(json{{"type", kEventError}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
@@ -226,6 +236,7 @@ private:
     }
 
     std::unique_ptr<ov::genai::LLMPipeline> pipeline_;
+    std::unique_ptr<ov::genai::Tokenizer> tokenizer_;
     std::thread worker_;
     std::mutex mutex_;
     std::condition_variable cv_;
@@ -255,8 +266,9 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<ov::genai::LLMPipeline> pipeline;
+    std::unique_ptr<ov::genai::Tokenizer> tokenizer;
     try {
-        ov::genai::Tokenizer tokenizer(options.modelPath);
+        tokenizer = std::make_unique<ov::genai::Tokenizer>(options.modelPath);
         auto typed = [](const std::string& raw) -> ov::Any {
             if (raw == "true" || raw == "false") {
                 return raw == "true";
@@ -277,7 +289,7 @@ int main(int argc, char** argv) {
                  options.device.find("NPU") != std::string::npos)) {
             props.emplace(key, typed(raw));
         }
-        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, tokenizer, options.device, props);
+        pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, *tokenizer, options.device, props);
     } catch (const std::exception& e) {
         emit(json{{"type", kEventError}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
         return 1;
@@ -297,7 +309,7 @@ int main(int argc, char** argv) {
               {"ctx", options.contextLength},
               {"deviceName", deviceName}});
 
-    Runner runner(std::move(pipeline));
+    Runner runner(std::move(pipeline), std::move(tokenizer));
     runner.run();
     return 0;
 }
