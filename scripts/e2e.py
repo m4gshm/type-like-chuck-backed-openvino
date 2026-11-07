@@ -70,7 +70,9 @@ BENCH_MODELS = [
 ]
 BENCH_MAX_TOKENS = 64
 BENCH_RUNS = 2
-BENCH_CTX = 8192  # the plugin's NPU cap (tlc.local.npuContextMaxLength)
+# Every runner start uses the plugin's NPU cap (tlc.local.npuContextMaxLength)
+# so the compiled NPU blobs are shared by bench, e2e and the plugin.
+E2E_CTX = int(os.environ.get("E2E_CTX", "8192"))
 
 # Device for runner processes; resolved by select_device() unless set explicitly.
 RUNNER_DEVICE = "CPU"
@@ -125,7 +127,7 @@ def library_env():
 class Runner:
     """Spawned runner process; events are collected on a reader thread."""
 
-    def __init__(self, model=None, device=None, props=None, ctx=0, prompt_cache=False):
+    def __init__(self, model=None, device=None, props=None, ctx=E2E_CTX, prompt_cache=False):
         self.binary = binary_path()
         args = [self.binary]
         if model:
@@ -592,7 +594,7 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kin
         gens, warm = [], []
         for attempt in range(2):
             try:
-                r = Runner(model=out, device=device, props=run_props, ctx=BENCH_CTX, prompt_cache=cache)
+                r = Runner(model=out, device=device, props=run_props, prompt_cache=cache)
                 t0 = time.monotonic()
                 ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
                 compile_s = time.monotonic() - t0
