@@ -18,6 +18,9 @@ struct Options {
     std::size_t contextLength = 0;
     // OpenVINO plugin properties from --prop KEY=VALUE, passed to the pipeline as-is.
     std::map<std::string, std::string> properties;
+    // --prompt-cache: prefix caching on the PagedAttention backend (CPU/GPU);
+    // NPU has no prefix-cache path, the flag is ignored there.
+    bool promptCache = false;
     // --version: print the runtime version event and exit 0 (no model load).
     bool printVersion = false;
 };
@@ -41,6 +44,8 @@ inline Options parseArgs(int argc, char** argv) {
             if (eq != std::string::npos && eq > 0) {
                 options.properties[kv.substr(0, eq)] = kv.substr(eq + 1);
             }
+        } else if (arg == "--prompt-cache") {
+            options.promptCache = true;
         }
     }
     return options;

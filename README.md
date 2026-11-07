@@ -12,11 +12,17 @@ the extension uses an MLX backend instead of this runner.
 Same contract as the MLX runner (`type-like-chuck-backed-mlx`) — the TLC
 extension speaks one protocol for both runners.
 
-Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...]`
+Spawn: `tlc-ovgenai-runner --model <model-dir> --device CPU|GPU|NPU [--ctx N] [--prop KEY=VALUE ...] [--prompt-cache]`
 (`--device` defaults to GPU). `tlc-ovgenai-runner --version` prints a
 `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` event and exits 0 without loading a model.
 `app` is the runner's own version from git: an exact tag on HEAD (`v1.2.3`,
 `-dirty` for a modified tree), otherwise `<tag>-<N>-g<sha>+<branch>.<build-time>`.
+
+`--prompt-cache` enables prefix caching on the PagedAttention backend (CPU/GPU):
+generations whose prompt shares a token prefix with an earlier one reuse the
+cached KV rows, and `done` reports the reuse in `cachedTokens`. Forcing
+PagedAttention means pipeline creation fails instead of falling back to SDPA.
+NPU has no prefix-cache path — the flag is ignored there with a log line.
 
 `--prop` passes OpenVINO plugin properties to the pipeline (repeatable); values are
 typed automatically: `true`/`false` → bool, integer → int64, otherwise string, e.g.
@@ -35,9 +41,10 @@ Events on stdout (one JSON object per line):
 - `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` for `--version` (before any model load);
 - `{"type":"ready","model":...,"device":...,"ctx":N}` after the pipeline loads;
 - `{"type":"token","text":"..."}` per generated piece;
-- `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel","promptTokens":N}`
-  (prompt token count from the runner's tokenizer; omitted on the cancel paths
-  that answer without generating);
+- `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel","promptTokens":N,"cachedTokens":N}`
+  (prompt token count from the runner's tokenizer — omitted on the cancel paths
+  that answer without generating — and how many input tokens the prefix cache
+  served, 0 without `--prompt-cache` or on a miss);
 - `{"type":"error","id":N|null,"message":"..."}`.
 
 Requests on stdin: `{"type":"generate","id":N,"prompt":"...","maxTokens":N,"stop":[...]}`,
@@ -172,5 +179,9 @@ on NPU, their compiled blobs are cached across runs; nf4 is excluded on GPU),
 `ttft_s` — time to first token (prompt token count comes from the runner's
 `done` event), `tok_s` — decode throughput. Filter models with
 `E2E_SIZES="0.5B-int8-sym,1.5B-nf4"`, devices with
-`E2E_DEVICES=GPU task e2e:bench`.
+`E2E_DEVICES=GPU task e2e:bench`. `task e2e:bench:cache` runs the same bench
+with `--prompt-cache` (CPU/GPU) and adds warm continuations — the prompt grows
+by typed characters the way typing does — reporting `ttft_w_s` (first token of
+the warm run) and `cached_tok` (input tokens served by the prefix cache, from
+the runner's `done` event).
 

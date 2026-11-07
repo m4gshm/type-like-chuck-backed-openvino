@@ -19,8 +19,9 @@
 #include <nlohmann/json.hpp>
 #include <openvino/genai/generation_config.hpp>
 #include <openvino/genai/llm_pipeline.hpp>
-#include <openvino/genai/tokenizer.hpp>
+#include <openvino/genai/scheduler_config.hpp>
 #include <openvino/genai/streamer_base.hpp>
+#include <openvino/genai/tokenizer.hpp>
 #include <openvino/runtime/core.hpp>
 #include <openvino/runtime/properties.hpp>
 
@@ -224,8 +225,10 @@ private:
             const int nativeReason = results.finish_reasons.empty() ? 0
                                                                     : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
+            const size_t cachedTokens = results.perf_metrics.get_num_prefix_cache_hit_tokens();
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
-            emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}, {"promptTokens", promptTokens}});
+            emit(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason},
+                      {"promptTokens", promptTokens}, {"cachedTokens", cachedTokens}});
         } catch (const std::exception& e) {
             std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
             emit(json{{"type", kEventError}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}});
@@ -288,6 +291,18 @@ int main(int argc, char** argv) {
                  options.properties, options.contextLength,
                  options.device.find("NPU") != std::string::npos)) {
             props.emplace(key, typed(raw));
+        }
+        if (options.promptCache) {
+            if (options.device.find("NPU") != std::string::npos) {
+                std::cerr << "[runner] --prompt-cache has no NPU prefix-cache path, ignoring\n";
+            } else {
+                // Opt-in prefix caching: forces the PagedAttention backend
+                // (creation fails instead of falling back to SDPA) and reuses
+                // KV rows for shared prompt prefixes across generations.
+                ov::genai::SchedulerConfig schedulerConfig;
+                schedulerConfig.enable_prefix_caching = true;
+                props.emplace("scheduler_config", schedulerConfig);
+            }
         }
         pipeline = std::make_unique<ov::genai::LLMPipeline>(options.modelPath, *tokenizer, options.device, props);
     } catch (const std::exception& e) {

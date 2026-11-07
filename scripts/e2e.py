@@ -125,7 +125,7 @@ def library_env():
 class Runner:
     """Spawned runner process; events are collected on a reader thread."""
 
-    def __init__(self, model=None, device=None, props=None, ctx=0):
+    def __init__(self, model=None, device=None, props=None, ctx=0, prompt_cache=False):
         self.binary = binary_path()
         args = [self.binary]
         if model:
@@ -133,6 +133,8 @@ class Runner:
             if ctx > 0:
                 args += ["--ctx", str(ctx)]
             args += [x for kv in (RUNNER_PROPS if props is None else props) for x in ("--prop", kv)]
+        if prompt_cache:
+            args += ["--prompt-cache"]
         self.proc = subprocess.Popen(
             args, cwd=ROOT, env=library_env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
@@ -436,11 +438,14 @@ def test_queue(model):
 
 # ---------------------------------------------------------------- bench
 
-def bench_generate(r, run_id, prompt):
-    """One fixed-length FIM generation; returns (ttft_s, total_s, tokens)."""
+def bench_generate(r, run_id, prompt, use_cache=False):
+    """One fixed-length FIM generation; returns (ttft_s, total_s, tokens, promptTokens, cachedTokens)."""
     start = len(r.events)
     t0 = time.monotonic()
-    r.send({"type": "generate", "id": run_id, "prompt": prompt, "maxTokens": BENCH_MAX_TOKENS})
+    payload = {"type": "generate", "id": run_id, "prompt": prompt, "maxTokens": BENCH_MAX_TOKENS}
+    if use_cache:
+        payload["cache"] = True
+    r.send(payload)
     first = r.wait_for(lambda e: e.get("type") in ("token", "error"), timeout=120, since=start)
     if first.get("type") == "error":
         raise AssertionError(f"bench run {run_id} failed: {first}")
@@ -452,7 +457,7 @@ def bench_generate(r, run_id, prompt):
     tokens = sum(1 for e in r.events[start:] if e.get("type") == "token")
     if done.get("finishReason") not in ("length", "stop"):
         raise AssertionError(f"bench run {run_id} failed: {done}")
-    return ttft, total, tokens, done.get("promptTokens")
+    return ttft, total, tokens, done.get("promptTokens"), done.get("cachedTokens")
 
 
 def blob_cache_dir(model_dir, props):
@@ -549,14 +554,23 @@ def _sys_info():
     return info
 
 
-def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
+def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture", cache=False):
     """Run the bench for one device; returns (characteristics, rows) without
     printing the table — the caller decides when to print it. ttft_s carries
-    prefill; gen_s/tok_s are decode-only."""
+    prefill; gen_s/tok_s are decode-only. With cache=True the runner starts
+    with --prompt-cache and warm continuations (typed characters at the cursor)
+    report ttft_w/cached_tok from the pipeline prefix cache."""
     if device == "auto":
         fail("bench needs an explicit device (NPU, GPU or CPU)")
     prompt, prefix_chars, suffix_chars = fixture_prompt_parts() if prompt_kind == "fixture" else (FIM_PROMPT, len(FIM_PROMPT), 0)
+    warm_prompts = []
+    if cache:
+        if prompt_kind == "fixture":
+            warm_prompts = [fixture_prompt_parts(typed=t)[0] for t in ("a", "ab")]
+        else:
+            warm_prompts = [prompt, prompt]
     rows = []
+    warm_rows = []
     chars = {"device": device, **_sys_info(), "prompt_chars": len(prompt),
              "prefix_chars": prefix_chars, "suffix_chars": suffix_chars}
     for name, repo, out, devices in BENCH_MODELS:
@@ -575,22 +589,44 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kin
             clear_blobs(cache)
         label = name
         print(f"bench: {label} on {device}", flush=True)
-        r = Runner(model=out, device=device, props=run_props, ctx=BENCH_CTX)
-        t0 = time.monotonic()
-        ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
-        compile_s = time.monotonic() - t0
-        gens = []
-        for i in range(runs):
-            gens.append(bench_generate(r, i, prompt))
-        r.close()
+        gens, warm = [], []
+        for attempt in range(2):
+            try:
+                r = Runner(model=out, device=device, props=run_props, ctx=BENCH_CTX, prompt_cache=cache)
+                t0 = time.monotonic()
+                ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
+                compile_s = time.monotonic() - t0
+                gens = []
+                for i in range(runs):
+                    gens.append(bench_generate(r, i, prompt))
+                warm = []
+                for j, wp in enumerate(warm_prompts):
+                    warm.append(bench_generate(r, 100 + j, wp, use_cache=True))
+                r.close()
+                break
+            except AssertionError:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+                gens, warm = [], []
+                if attempt == 1:
+                    raise
+                print(f"  {label}: no token within 120s, retrying", flush=True)
         chars.update({"name": ready.get("deviceName") or "?",
                       "ctx": ready.get("ctx")})
-        ttft, total, tokens, prompt_tokens = gens[-1]  # steady state
+        steady = gens[0] if cache else gens[-1]  # cache mode: runs 2+ would ride the warm cache
+        ttft, total, tokens, prompt_tokens, _ = steady
         decode = max(total - ttft, 1e-3)
         chars["prompt_tokens"] = prompt_tokens
         rows.append((label, compile_s, ttft, decode, tokens))
         print(f"  {label}: compile={compile_s:.1f}s ttft={ttft:.2f}s "
               f"decode={decode:.2f}s ({tokens} tok, {tokens/decode:.1f} tok/s)", flush=True)
+        if warm:
+            wttft, _, _, wptok, wcached = warm[-1]  # steady warm state
+            warm_rows.append((label, wttft, wcached, wptok))
+            print(f"  {label}: warm ttft={wttft:.2f}s cached={wcached}/{wptok}", flush=True)
+    chars["warm"] = warm_rows
     return chars, rows
 
 
@@ -606,20 +642,26 @@ def print_bench_table(chars, rows, runs=BENCH_RUNS):
     print(f"{'model':<{w}}  compile_s  ttft_s  gen_s  tokens  tok_s")
     for name, c, ttft, total, tokens in rows:
         print(f"{name:<{w}} {c:>9.1f} {ttft:>7.2f} {total:>6.2f} {tokens:>6} {tokens/total:>7.1f}")
+    warm_rows = chars.get("warm") or []
+    if warm_rows:
+        print(f"\nwarm start (KV-cache reuse, prompt + typed characters):")
+        print(f"{'model':<{w}}  ttft_w_s  cached_tok")
+        for name, wttft, wcached, wptok in warm_rows:
+            print(f"{name:<{w}} {wttft:>9.2f}  {wcached if wcached is not None else '?'}/{wptok}")
 
 
-def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
+def bench_compile(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture", cache=False):
     """Bench a single device and print its table (kept for --device)."""
-    chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind)
+    chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind, cache)
     chars["props"] = props if props else "runner defaults"
     print_bench_table(chars, rows, runs)
 
 
-def bench_devices(devices, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture"):
+def bench_devices(devices, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kind="fixture", cache=False):
     """Bench every device, then print all tables with device characteristics."""
     results = []
     for device in devices:
-        chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind)
+        chars, rows = bench_run(device, props, runs, cold, sizes, prompt_kind, cache)
         chars["props"] = props if props else "runner defaults"
         results.append((chars, rows))
     print("\n=== bench results ===")
@@ -686,14 +728,17 @@ def mask_reserved(text):
     return text
 
 
-def fixture_prompt_parts():
+def fixture_prompt_parts(typed=""):
     """Plugin-shaped FIM prompt over the bundled fixture: the cursor sits on the
     whitespace-only line 96 inside a var block, and the prefix/suffix clamps
-    mirror the plugin defaults. Returns (prompt, prefix_chars, suffix_chars)."""
+    mirror the plugin defaults. `typed` appends characters at the cursor the
+    way typing does (prefix grows, suffix unchanged) for cache-warm runs; the
+    prefix window is not re-clamped, so the front stays anchored like in files
+    that fit the prefix budget. Returns (prompt, prefix_chars, suffix_chars)."""
     with open(os.path.join(ROOT, "scripts", "fixtures", "api_test.go"), encoding="utf-8") as f:
         lines = f.read().split("\n")
     li, col = 95, 2
-    prefix = mask_reserved("\n".join(lines[:li]) + "\n" + lines[li][:col])[-PLUGIN_PREFIX_MAX:]
+    prefix = mask_reserved("\n".join(lines[:li]) + "\n" + lines[li][:col])[-PLUGIN_PREFIX_MAX:] + typed
     suffix = mask_reserved(lines[li][col:] + "\n" + "\n".join(lines[li + 1:]))[:PLUGIN_SUFFIX_MAX]
     return ("<|fim_prefix|>" + prefix + "<|fim_suffix|>" + suffix + "<|fim_middle|>",
             len(prefix), len(suffix))
@@ -868,6 +913,8 @@ def main():
                    help="fixture = plugin-shaped FIM from the bundled fixture (~1.5–2k token prefill); tiny = one-line FIM")
     p.add_argument("--sizes", default=None,
                    help="comma-separated model sizes to bench (default: all BENCH_MODELS; on NPU the slow-compiling upstream int4 models are skipped unless listed explicitly; per-model dir override E2E_<name with . and - replaced by _>_DIR, e.g. E2E_0_5B_int8_DIR)")
+    p.add_argument("--cache", action="store_true",
+                   help="start the runner with --prompt-cache (CPU/GPU) and run warm continuations (KV-cache reuse), reporting ttft_w/cached_tok")
     args = ap.parse_args()
 
     if args.cmd == "download-model":
@@ -876,10 +923,10 @@ def main():
     elif args.cmd == "bench":
         if args.devices:
             bench_devices(args.devices.split(), args.prop, args.runs, args.cold,
-                          args.sizes.split(",") if args.sizes else None, args.prompt)
+                          args.sizes.split(",") if args.sizes else None, args.prompt, args.cache)
         else:
             bench_compile(args.device, args.prop, args.runs, args.cold,
-                          args.sizes.split(",") if args.sizes else None, args.prompt)
+                          args.sizes.split(",") if args.sizes else None, args.prompt, args.cache)
     elif args.cmd == "manual":
         manual_client(args.model, args.device, args.prop)
     elif args.cmd == "real-file":

@@ -246,6 +246,14 @@ tasks:
         {{- $sizes := .E2E_SIZES}}{{$props := .E2E_PROPS}}{{$cold := .E2E_COLD}}
         python3 scripts/e2e.py bench --devices '{{.E2E_DEVICES | default "NPU GPU"}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
 
+  e2e:bench:cache:
+    desc: 'Bench with prefix-cache reuse (--prompt-cache on CPU/GPU; warm continuations report ttft_w/cached_tok). Same env vars as e2e:bench'
+    deps: [build]
+    cmds:
+      - |
+        {{- $sizes := .E2E_SIZES}}{{$props := .E2E_PROPS}}{{$cold := .E2E_COLD}}
+        python3 scripts/e2e.py bench --cache --devices '{{.E2E_DEVICES | default "NPU GPU"}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
+
   e2e:bench:nf4:
     desc: 'Bench the nf4 models on NPU (nf4 is excluded from the GPU bench)'
     deps: [models:nf4]
