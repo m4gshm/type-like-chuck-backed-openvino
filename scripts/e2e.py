@@ -70,6 +70,7 @@ BENCH_MODELS = [
 ]
 BENCH_MAX_TOKENS = 64
 BENCH_RUNS = 2
+BENCH_CTX = 8192  # the plugin's NPU cap (tlc.local.npuContextMaxLength)
 
 # Device for runner processes; resolved by select_device() unless set explicitly.
 RUNNER_DEVICE = "CPU"
@@ -124,11 +125,13 @@ def library_env():
 class Runner:
     """Spawned runner process; events are collected on a reader thread."""
 
-    def __init__(self, model=None, device=None, props=None):
+    def __init__(self, model=None, device=None, props=None, ctx=0):
         self.binary = binary_path()
         args = [self.binary]
         if model:
             args += ["--model", model, "--device", device or RUNNER_DEVICE]
+            if ctx > 0:
+                args += ["--ctx", str(ctx)]
             args += [x for kv in (RUNNER_PROPS if props is None else props) for x in ("--prop", kv)]
         self.proc = subprocess.Popen(
             args, cwd=ROOT, env=library_env(),
@@ -438,9 +441,13 @@ def bench_generate(r, run_id, prompt):
     start = len(r.events)
     t0 = time.monotonic()
     r.send({"type": "generate", "id": run_id, "prompt": prompt, "maxTokens": BENCH_MAX_TOKENS})
-    r.wait_for(lambda e: e.get("type") == "token", timeout=120, since=start)
+    first = r.wait_for(lambda e: e.get("type") in ("token", "error"), timeout=120, since=start)
+    if first.get("type") == "error":
+        raise AssertionError(f"bench run {run_id} failed: {first}")
     ttft = time.monotonic() - t0
-    done = r.wait_for(lambda e: e.get("type") == "done", timeout=300, since=start)
+    done = r.wait_for(lambda e: e.get("type") in ("done", "error"), timeout=300, since=start)
+    if done.get("type") == "error":
+        raise AssertionError(f"bench run {run_id} failed: {done}")
     total = time.monotonic() - t0
     tokens = sum(1 for e in r.events[start:] if e.get("type") == "token")
     if done.get("finishReason") not in ("length", "stop"):
@@ -568,7 +575,7 @@ def bench_run(device, props, runs=BENCH_RUNS, cold=False, sizes=None, prompt_kin
             clear_blobs(cache)
         label = name
         print(f"bench: {label} on {device}", flush=True)
-        r = Runner(model=out, device=device, props=run_props)
+        r = Runner(model=out, device=device, props=run_props, ctx=BENCH_CTX)
         t0 = time.monotonic()
         ready = r.wait_for(lambda e: e.get("type") == "ready", timeout=None)
         compile_s = time.monotonic() - t0
