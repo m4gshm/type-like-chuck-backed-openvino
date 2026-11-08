@@ -20,7 +20,7 @@ vars:
   RUNNER_POSIX: '{{if eq ARCH "arm64"}}tlc-ovgenai-runner-linux-arm64{{else}}tlc-ovgenai-runner-linux-x64{{end}}'
   OV_DIR_POSIX: '{{.OV_DIR}}/runtime/cmake'
   OV_LIB_POSIX: '{{.OV_DIR}}/runtime/lib/{{if eq ARCH "arm64"}}aarch64{{else}}intel64{{end}}:{{.OV_DIR}}/runtime/3rdparty/tbb/lib'
-  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int8-ov'
+  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov'
 
 tasks:
   default:
@@ -241,7 +241,7 @@ tasks:
     desc: Full E2E suite on GPU only
     cmds:
       - task: e2e
-        vars: { E2E_DEVICE: GPU }
+        vars: { E2E_DEVICE: GPU, MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int4-sym' }
 
   e2e:gpu:nf4:
     desc: Full E2E suite on GPU over the nf4 models
