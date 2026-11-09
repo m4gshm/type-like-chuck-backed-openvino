@@ -20,7 +20,7 @@ vars:
   RUNNER_POSIX: '{{if eq ARCH "arm64"}}tlc-ovgenai-runner-linux-arm64{{else}}tlc-ovgenai-runner-linux-x64{{end}}'
   OV_DIR_POSIX: '{{.OV_DIR}}/runtime/cmake'
   OV_LIB_POSIX: '{{.OV_DIR}}/runtime/lib/{{if eq ARCH "arm64"}}aarch64{{else}}intel64{{end}}:{{.OV_DIR}}/runtime/3rdparty/tbb/lib'
-  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int8-ov'
+  MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov'
 
 tasks:
   default:
@@ -67,9 +67,11 @@ tasks:
           *)     magic='1f8b' ;;   # gzip magic
         esac
         hex() { head -c 2 "$1" | od -An -tx1 | tr -d ' \n'; }
+        curl_opts='-fSL -C - --retry 3 --retry-delay 2'
+        if [ -t 2 ]; then curl_opts="$curl_opts --progress-bar"; else curl_opts="$curl_opts -sS"; fi
         for i in 1 2 3 4 5 6; do
           [ -f "$f" ] && [ "$(hex "$f")" != "$magic" ] && rm -f "$f"
-          curl -fSsL -C - --retry 3 --retry-delay 2 '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
+          curl $curl_opts '{{.URL}}' -o "$f" && [ "$(hex "$f")" = "$magic" ] && exit 0
           echo "download attempt $i failed, resuming..."; sleep 3
         done
         exit 1
@@ -142,6 +144,34 @@ tasks:
       - task: test
       - task: smoke:loader
 
+  release:upload:
+    desc: Build from an exact pushed tag and attach the host binary to the GitHub release (fails when HEAD is not the tag or sources differ from it)
+    vars:
+      RELEASE_TAG:
+        sh: git describe --tags --exact-match 2>/dev/null || echo ''
+      RELEASE_REPO:
+        sh: git remote get-url origin | sed -E 's#.*github\.com[:/]##; s#\.git$##'
+    cmds:
+      - |
+        [ -n '{{.RELEASE_TAG}}' ] \
+          || { echo "release: HEAD is not exactly at a tag; cut one with git tag vX.Y.Z"; exit 1; }
+        HEAD_SHA=$(git rev-parse HEAD)
+        REMOTE=$(git ls-remote origin "refs/tags/{{.RELEASE_TAG}}")
+        REMOTE_SHA=$(echo "$REMOTE" | grep -v '\^{}' | cut -f1 | head -1)
+        PEELED_SHA=$(echo "$REMOTE" | grep '\^{}' | cut -f1 | head -1)
+        [ "$REMOTE_SHA" = "$HEAD_SHA" ] || [ "$PEELED_SHA" = "$HEAD_SHA" ] \
+          || { echo "release: origin tag {{.RELEASE_TAG}} does not point at HEAD ($HEAD_SHA); push the tag first"; exit 1; }
+        git diff --quiet HEAD -- src CMakeLists.txt \
+          || { echo "release: working tree differs from tag {{.RELEASE_TAG}} in src/CMakeLists.txt"; exit 1; }
+        echo "release: {{.RELEASE_TAG}} -> {{.RELEASE_REPO}}"
+      - task: build
+      - |
+        ASSET={{if eq OS "windows"}}tlc-ovgenai-runner-win32-x64.exe{{else}}{{.RUNNER_POSIX}}{{end}}
+        gh release view '{{.RELEASE_TAG}}' -R '{{.RELEASE_REPO}}' >/dev/null 2>&1 \
+          || gh release create '{{.RELEASE_TAG}}' --draft --verify-tag --generate-notes -R '{{.RELEASE_REPO}}'
+        gh release upload '{{.RELEASE_TAG}}' "build/$ASSET" --clobber -R '{{.RELEASE_REPO}}'
+        echo "uploaded build/$ASSET -> {{.RELEASE_TAG}}"
+
   test:
     desc: Run unit tests (doctest via ctest)
     deps: [build]
@@ -163,6 +193,21 @@ tasks:
       E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
     cmds:
       - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
+
+  e2e:real-file:
+    desc: 'Raw FIM against the bundled fixture (FILE, LINE, COLUMN override it) — observes the natural, possibly multi-line completion'
+    deps: [build, model]
+    env:
+      E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
+    cmds:
+      - python3 scripts/e2e.py real-file --file '{{.FILE | default "scripts/fixtures/api_test.go"}}' --line '{{.LINE | default "96"}}' --column '{{.COLUMN | default "9"}}' --max-tokens '{{.MAX_TOKENS | default "256"}}' --model '{{.MODEL_DIR}}' --device '{{.DEVICE | default "auto"}}'
+
+  e2e:real-file:npu:
+    desc: 'real-file on NPU over the nf4 model (long ready timeout: first load compiles the graph)'
+    deps: [models:nf4]
+    cmds:
+      - task: e2e:real-file
+        vars: { DEVICE: NPU, E2E_READY_TIMEOUT: '1800', MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-nf4-ov' }
 
   e2e:npu:
     desc: 'Full E2E suite on NPU over the nf4 models (long ready timeout: first load compiles the graph)'
@@ -196,7 +241,7 @@ tasks:
     desc: Full E2E suite on GPU only
     cmds:
       - task: e2e
-        vars: { E2E_DEVICE: GPU }
+        vars: { E2E_DEVICE: GPU, MODEL_DIR: '.cache/models/qwen2.5-coder-0.5b-int4-sym' }
 
   e2e:gpu:nf4:
     desc: Full E2E suite on GPU over the nf4 models
@@ -229,12 +274,20 @@ tasks:
         {{- $sizes := .E2E_SIZES}}{{$props := .E2E_PROPS}}{{$cold := .E2E_COLD}}
         python3 scripts/e2e.py bench --devices '{{.E2E_DEVICES | default "NPU GPU"}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
 
+  e2e:bench:cache:
+    desc: 'Bench with prefix-cache reuse (--prompt-cache on CPU/GPU; warm continuations report ttft_w/cached_tok). Same env vars as e2e:bench'
+    deps: [build]
+    cmds:
+      - |
+        {{- $sizes := .E2E_SIZES}}{{$props := .E2E_PROPS}}{{$cold := .E2E_COLD}}
+        python3 scripts/e2e.py bench --cache --devices '{{.E2E_DEVICES | default "NPU GPU"}}' {{$props}} {{if $cold}}--cold{{end}} {{if $sizes}}--sizes '{{$sizes}}'{{end}}
+
   e2e:bench:nf4:
-    desc: 'Bench the nf4 models on NPU and GPU for a like-for-like quantization comparison'
+    desc: 'Bench the nf4 models on NPU (nf4 is excluded from the GPU bench)'
     deps: [models:nf4]
     cmds:
       - task: e2e:bench
-        vars: { E2E_DEVICES: 'NPU GPU', E2E_SIZES: '0.5B-nf4,1.5B-nf4,3B-nf4' }
+        vars: { E2E_DEVICES: NPU, E2E_SIZES: '0.5B-nf4,1.5B-nf4,3B-nf4' }
 
   e2e:bench:npu:
     desc: 'Bench on NPU only (same options as e2e:bench via E2E_SIZES/E2E_PROPS/E2E_COLD)'
