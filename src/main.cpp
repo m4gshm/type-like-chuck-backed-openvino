@@ -610,11 +610,9 @@ public:
         cv_.notify_all();
     }
 
-private:
-    struct Job {
-        runner::GenerateRequest request;
-        std::shared_ptr<Sink> sink;
-    };
+    bool exitRequested() const {
+        return exit_.load();
+    }
 
     void handleLine(const std::string& line, const std::shared_ptr<Sink>& sink) {
         if (line.empty()) {
@@ -636,6 +634,12 @@ private:
             requestExit("shutdown request");
         }
     }
+
+private:
+    struct Job {
+        runner::GenerateRequest request;
+        std::shared_ptr<Sink> sink;
+    };
 
     void processQueue() {
         for (;;) {
@@ -1020,6 +1024,36 @@ private:
         }
     }
 
+    // The stdin pseudo-client: in listen mode the spawning extension talks
+    // over stdin (no auth, like classic stdio mode); its events flow back over
+    // the event stream, and it counts toward the last-client-left shutdown.
+    // Detached: getline may still block when exit comes from a listener
+    // client, and main() exits via _Exit anyway.
+public:
+    void startStdioClient() {
+        std::thread([this] { runStdinClient(); }).detach();
+    }
+
+    void runStdinClient() {
+        auto client = std::make_shared<Client>();
+        client->sink = std::make_shared<StdioSink>();
+        client->sink->clientId = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            clients_.push_back(client);
+        }
+        std::cerr << "[runner] stdio client connected (total " << connected_.fetch_add(1) + 1 << ")\n";
+        hadClient_.store(true);
+        std::string line;
+        while (!quit_.load() && std::getline(std::cin, line)) {
+            runner_.handleLine(line, client->sink);
+            if (runner_.exitRequested()) {
+                break;
+            }
+        }
+        dropClient(client.get());
+    }
+
     std::string endpoint_;
     int tcpPort_;
     std::string token_;
@@ -1121,6 +1155,7 @@ int main(int argc, char** argv) {
                                                    : options.listenEndpoint)}});
             return 1;
         }
+        server->startStdioClient();
     }
 
     std::unique_ptr<ov::genai::LLMPipeline> pipeline;
