@@ -15,7 +15,7 @@
 
 - [x] 3.1 Add the request `id` to every `token` event (named constant field, `kEventToken`); keep stdin/stdout behavior otherwise identical; verified `task test` and `task e2e:protocol` (ALL PASSED)
 - [x] 3.2 Add `pid` to the `ready` event and verify it in the protocol e2e
-- [ ] 3.5 Accept `--token <secret>` and require `auth` as the first message of every listen-mode client connection (wrong/missing token → `error` + close); stdin mode unchanged; verify in the smoke scripts (with-token client works, token-less client is rejected)
+- [x] 3.5 Accept `--token <secret>` and require `auth` as the first message of TCP listen-mode client connections only (wrong/missing token → `error` + close; pipe and stdin clients skip the gate); verify in the smoke scripts (with-token client works, token-less TCP client is rejected)
 - [x] 3.3 Parse `--listen-tcp <port|0>` in `src/runner.hpp` (arg tests) and implement the localhost TCP server (port 0 = random free port) in `src/main.cpp`; verified with the smoke scripts over TCP (Windows + podman ubuntu24)
 - [x] 3.4 Report the chosen `port` on the `ready` event when `--listen-tcp 0` (also emitted on the child's stdout, where the spawning client reads it); verified in the smoke scripts
 
