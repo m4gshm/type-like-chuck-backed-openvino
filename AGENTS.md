@@ -11,6 +11,10 @@ imports these binaries and reads the runner's embedded version markers — the
 `ovgenai-runtime-version: ` byte-scan marker and the `version` event fields are
 a cross-repo contract; change both sides together.
 
+## Git workflow
+
+Development happens in feature branches cut from `main` (name: `feature/<topic>`). Code lands in `main` only via a squash-merge PR, done manually or when the user explicitly asks for it. Agents MUST NOT merge to `main` on their own.
+
 ## Layout
 
 - `src/main.cpp` — NDJSON loop, generation worker thread, entry point.
@@ -20,7 +24,7 @@ a cross-repo contract; change both sides together.
 - `Taskfile.yaml` — go-task build automation (runtime download, host builds, smoke).
 - `.github/workflows/runner.yml` — CI build matrix + loader smoke test; `v*` tags publish a release.
 - `vendor/` — vendored headers (`nlohmann/json.hpp`).
-- `openspec/` — specs and the active change (`openspec/changes/openvino-genai-stdio-runner`).
+- `openspec/` — specs and the active change (`openspec/changes/shared-stdio-runner`).
 
 ## Commands
 
@@ -29,7 +33,7 @@ task build    # runtime + native build for the host OS → build/
 task test
 task e2e:protocol
 task e2e
-task e2e:bench   # compile time + inference speed, int8/int4 (upstream) + nf4/int8-sym/int4-sym (m4gshm) x 0.5B/1.5B/3B (downloads models)
+task e2e:bench   # compile time + inference speed x 0.5B/1.5B/3B; NPU: nf4/int8-sym/int4-sym (m4gshm), GPU/CPU: int8/int4 (upstream) + int8-sym/int4-sym (m4gshm) (downloads models)
 task e2e:bench:gpu  # same bench on GPU; task e2e:gpu:nf4 for the full suite over nf4 models
 python3 scripts/e2e.py manual --model <dir>  # interactive NDJSON client (/fim helper, /quit)
 ```
@@ -47,14 +51,16 @@ commands with `&&`.
   continuation lines with the opening bracket; `public:`/`private:` at column
   0; a single space before trailing `//` comments. After writing or editing
   C++, run `task fmt` (or clang-format) before committing.
-- Comments: default to **no comments**. Write code that explains itself; add a
-  comment only when the code cannot convey non-obvious *why* — invariants,
-  workarounds, platform quirks, external-command behavior. Never comment what
-  the next line obviously does. If a block needs an explaining comment, first
-  try renaming or extracting a well-named function/constant instead. When
-  editing code, delete nearby comments that became redundant. Tests follow the
-  same rule: assertion names and structure should make the intent clear
-  without commentary.
+- Comments: default to **no comments**. Write code that explains itself;
+  add a comment only when the code cannot convey non-obvious *why* — invariants,
+  workarounds, platform quirks, external-command behavior. Never comment:
+  - what the next line obviously does ("//log", "// Trigger event", "// Create X");
+  - JSDoc/Doxygen restating parameter names/types on trivial functions;
+  - section markers, TODO-free narration, alternatives that were not chosen.
+  If a block needs an explaining comment, first try renaming or extracting a
+  well-named helper instead. When editing code, delete nearby comments that
+  became redundant. Tests follow the same rule: assertion names and structure
+  should make the intent clear without commentary.
 - Shared string values that cross a boundary (NDJSON event and request type
   names) are named constants (`kEvent*`/`kRequest*` in `main.cpp`), not
   inline literals at each use site.
