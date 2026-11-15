@@ -510,7 +510,11 @@ void readClient(int fd, const std::function<void(const std::string&)>& onLine,
 // are per-client, so two clients may send the same id.
 class Runner {
 public:
-    explicit Runner(std::unique_ptr<ov::genai::LLMPipeline> pipeline) : pipeline_(std::move(pipeline)) {}
+    Runner() = default;
+
+    void setPipeline(std::unique_ptr<ov::genai::LLMPipeline> pipeline) {
+        pipeline_ = std::move(pipeline);
+    }
 
     // Called when a client sink stops accepting writes; listen mode uses it
     // to drop the stalled client (its refcount must not hold the process).
@@ -1083,6 +1087,34 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Listen mode starts its listener before the model load: a client that
+    // arrives while the model compiles connects and waits for the ready
+    // broadcast instead of spawning a duplicate runner.
+    const bool listenShared = listenMode || tcpMode;
+    Runner runner;
+    std::unique_ptr<Server> server;
+    if (listenShared) {
+#ifdef _WIN32
+        WSADATA wsa{};
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            logError(json{{"type", kEventError}, {"id", nullptr}, {"message", "WSAStartup failed"}});
+            return 2;
+        }
+#endif
+        server = std::make_unique<Server>(tcpMode ? "" : options.listenEndpoint,
+                                          tcpMode ? options.listenTcpPort : -1,
+                                          options.token, runner);
+        runner.onSinkBroken([&srv = *server](const std::shared_ptr<Sink>& sink) { srv.dropBySink(sink); });
+        if (!server->start()) {
+            logError(json{{"type", kEventError},
+                          {"id", nullptr},
+                          {"message", "listen endpoint already in use: " +
+                                          (tcpMode ? "127.0.0.1:" + std::to_string(options.listenTcpPort)
+                                                   : options.listenEndpoint)}});
+            return 1;
+        }
+    }
+
     std::unique_ptr<ov::genai::LLMPipeline> pipeline;
     try {
         ov::genai::Tokenizer tokenizer(options.modelPath);
@@ -1111,6 +1143,7 @@ int main(int argc, char** argv) {
         logError(json{{"type", kEventError}, {"id", nullptr}, {"message", std::string("load failed: ") + e.what()}});
         return 1;
     }
+    runner.setPipeline(std::move(pipeline));
 
     // Diagnostic only; not every device/plugin exposes its full name.
     std::string deviceName;
@@ -1133,43 +1166,24 @@ int main(int argc, char** argv) {
 #endif
                                      )}};
 
-    Runner runner(std::move(pipeline));
-    if (!listenMode && options.listenTcpPort < 0) {
+    if (!listenShared) {
         std::fputs((ready.dump() + "\n").c_str(), g_events);
         std::fflush(g_events);
         runner.runStdio();
         return 0;
     }
 
-#ifdef _WIN32
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        logError(json{{"type", kEventError}, {"id", nullptr}, {"message", "WSAStartup failed"}});
-        return 2;
-    }
-#endif
-    Server server(tcpMode ? "" : options.listenEndpoint, tcpMode ? options.listenTcpPort : -1,
-                  options.token, runner);
-    runner.onSinkBroken([&server](const std::shared_ptr<Sink>& sink) { server.dropBySink(sink); });
-    if (!server.start()) {
-        logError(json{{"type", kEventError},
-                      {"id", nullptr},
-                      {"message", "listen endpoint already in use: " +
-                                      (tcpMode ? "127.0.0.1:" + std::to_string(options.listenTcpPort)
-                                               : options.listenEndpoint)}});
-        return 1;
-    }
     json readyShared = ready;
     if (tcpMode) {
-        readyShared["port"] = server.boundPort();
+        readyShared["port"] = server->boundPort();
     }
     // The spawning client learns pid/port from the child's stdout: the ready
     // event goes there even though the protocol runs over the listener.
     std::fputs((readyShared.dump() + "\n").c_str(), g_events);
     std::fflush(g_events);
-    server.setReady(readyShared);
+    server->setReady(readyShared);
     runner.runShared();
-    server.stop();
+    server->stop();
     // OpenVINO's NPU plugin keeps background threads that race static
     // teardown and fail the process (0xC0000409) after all work is done;
     // every protocol event is already flushed, so skip the destructors.
