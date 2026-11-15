@@ -532,7 +532,7 @@ public:
                 break;
             }
         }
-        requestExit();
+        requestExit("stdin closed");
         if (worker_.joinable()) {
             worker_.join();
         }
@@ -586,7 +586,8 @@ public:
         }
     }
 
-    void requestExit() {
+    void requestExit(const char* reason) {
+        std::cerr << "[runner] exit requested: " << reason << '\n';
         std::vector<Job> dropped;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -630,7 +631,7 @@ private:
         } else if (type == kRequestCancel) {
             cancelRequest(message, sink);
         } else if (type == kRequestShutdown) {
-            requestExit();
+            requestExit("shutdown request");
         }
     }
 
@@ -927,7 +928,7 @@ private:
                 client->sink->writeLine(readyLine_);
             }
         }
-        connected_.fetch_add(1);
+        std::cerr << "[runner] client connected (total " << connected_.fetch_add(1) + 1 << ")\n";
         hadClient_.store(true);
         readers_.emplace_back([this, client] { readLoop(client); });
     }
@@ -990,7 +991,7 @@ private:
         } else if (type == kRequestCancel) {
             runner_.cancelRequest(message, sink);
         } else if (type == kRequestShutdown) {
-            runner_.requestExit();
+            runner_.requestExit("shutdown request");
         }
     }
 
@@ -1006,10 +1007,11 @@ private:
             sink = (*it)->sink;
             clients_.erase(it);
         }
+        std::cerr << "[runner] client disconnected (total " << connected_.load() - 1 << ")\n";
         sink->close();
         if (connected_.fetch_sub(1) == 1 && hadClient_.load()) {
             // Last client left: shut down and exit, no owner will kill us.
-            runner_.requestExit();
+            runner_.requestExit("last client left");
         }
     }
 
