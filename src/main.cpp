@@ -246,23 +246,42 @@ private:
     std::mutex mutex_;
 };
 
-// A stale socket file after a previous crash is removed before bind; a bind
-// failure with a live listener surfaces to main() as exit 1.
+// Ownership check for an endpoint a live runner may already hold: bind first
+// and only unlink+retry when the existing socket has no listener behind it —
+// an unconditional unlink would hijack another runner's endpoint.
 int makeListener(const std::string& endpoint) {
-    ::unlink(endpoint.c_str());
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     if (endpoint.size() >= sizeof(addr.sun_path) ||
-        std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", endpoint.c_str()) < 0 ||
-        ::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0 || ::listen(fd, 8) != 0) {
-        ::close(fd);
+        std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", endpoint.c_str()) < 0) {
         return -1;
     }
-    return fd;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return -1;
+        }
+        if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0 && ::listen(fd, 8) == 0) {
+            return fd;
+        }
+        const int bindErr = errno;
+        ::close(fd);
+        if (bindErr != EADDRINUSE) {
+            return -1;
+        }
+        const int probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe < 0) {
+            return -1;
+        }
+        const int probeErr = ::connect(probe, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+        ::close(probe);
+        if (probeErr == 0) {
+            // A live runner owns the endpoint.
+            return -1;
+        }
+        ::unlink(endpoint.c_str());
+    }
+    return -1;
 }
 
 #endif
