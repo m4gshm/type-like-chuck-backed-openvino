@@ -69,4 +69,8 @@ else()
   target_compile_options(runner-tests PRIVATE -Wall -Wextra)
 endif()
 
+if(WIN32)
+  target_link_libraries(tlc-ovgenai-runner PRIVATE ws2_32)
+endif()
+
 install(TARGETS tlc-ovgenai-runner RUNTIME DESTINATION .)

@@ -17,7 +17,11 @@
 #define NOMINMAX
 #include <io.h>
 #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #else
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -51,6 +55,7 @@ constexpr char kEventError[] = "error";
 constexpr char kRequestGenerate[] = "generate";
 constexpr char kRequestCancel[] = "cancel";
 constexpr char kRequestShutdown[] = "shutdown";
+constexpr char kRequestAuth[] = "auth";
 
 // A stalled or half-dead client is cut off after this instead of freezing
 // the generation worker; the client counts as disconnected.
@@ -285,6 +290,145 @@ int makeListener(const std::string& endpoint) {
 }
 
 #endif
+
+// TCP transport (127.0.0.1 only): the workaround for setups where local IPC
+// does not cross the plugin/backend boundary (VS Code remote/WSL).
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
+#else
+using SocketHandle = int;
+constexpr SocketHandle kInvalidSocket = -1;
+#endif
+
+void closeSocket(SocketHandle s) {
+    if (s == kInvalidSocket) {
+        return;
+    }
+#ifdef _WIN32
+    ::closesocket(s);
+#else
+    ::close(s);
+#endif
+}
+
+// Binds 127.0.0.1:port (0 = random free port, reported via outPort).
+SocketHandle makeTcpListener(unsigned short port, unsigned short& outPort) {
+    SocketHandle s = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (s == kInvalidSocket) {
+        return kInvalidSocket;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    if (::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || ::listen(s, 8) != 0) {
+        closeSocket(s);
+        return kInvalidSocket;
+    }
+    socklen_t len = sizeof(addr);
+    if (::getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        closeSocket(s);
+        return kInvalidSocket;
+    }
+    outPort = ntohs(addr.sin_port);
+    return s;
+}
+
+class TcpSink : public Sink {
+public:
+    explicit TcpSink(SocketHandle s) : sock_(s) {
+#ifdef _WIN32
+        const DWORD timeoutMs = kWriteTimeoutMs;
+        setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+#else
+        const timeval tv{static_cast<long>(kWriteTimeoutMs / 1000),
+                         static_cast<long>((kWriteTimeoutMs % 1000) * 1000)};
+        setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    }
+
+    ~TcpSink() override { close(); }
+
+    bool writeLine(const std::string& line) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (sock_ == kInvalidSocket) {
+            return false;
+        }
+        const std::string data = line + '\n';
+        size_t sent = 0;
+        while (sent < data.size()) {
+#ifdef _WIN32
+            const int n = ::send(sock_, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+#else
+            const ssize_t n = ::send(sock_, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+#endif
+            if (n <= 0) {
+                return false;
+            }
+            sent += static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    void close() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (sock_ != kInvalidSocket) {
+#ifdef _WIN32
+            ::shutdown(sock_, SD_BOTH);
+#else
+            ::shutdown(sock_, SHUT_RDWR);
+#endif
+            closeSocket(sock_);
+            sock_ = kInvalidSocket;
+        }
+    }
+
+    SocketHandle socket() const { return sock_; }
+
+private:
+    SocketHandle sock_;
+    std::mutex mutex_;
+};
+
+// Socket read loop with a quit check; feeds complete NDJSON lines into
+// onLine and calls onEof on disconnect, read failure, or quit.
+void readSocketClient(SocketHandle fd, const std::function<void(const std::string&)>& onLine,
+                      const std::function<bool()>& keepGoing, const std::function<void()>& onEof) {
+#ifdef _WIN32
+    const DWORD rcvTimeoutMs = kPollIntervalMs;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeoutMs), sizeof(rcvTimeoutMs));
+#endif
+    std::string buffer;
+    char chunk[8192];
+    for (;;) {
+        if (!keepGoing()) {
+            return;
+        }
+#ifndef _WIN32
+        pollfd pfd{fd, POLLIN, 0};
+        if (::poll(&pfd, 1, static_cast<int>(kPollIntervalMs)) <= 0) {
+            continue;
+        }
+#endif
+        const int n = static_cast<int>(::recv(fd, chunk, sizeof(chunk), 0));
+        if (n <= 0) {
+#ifdef _WIN32
+            if (n < 0 && (WSAGetLastError() == WSAETIMEDOUT || WSAGetLastError() == WSAEWOULDBLOCK)) {
+                continue;
+            }
+#endif
+            onEof();
+            return;
+        }
+        buffer.append(chunk, static_cast<size_t>(n));
+        size_t at = 0;
+        for (size_t nl; (nl = buffer.find('\n', at)) != std::string::npos; at = nl + 1) {
+            onLine(buffer.substr(at, nl - at));
+        }
+        buffer.erase(0, at);
+    }
+}
 
 // Overlapped read loop; feeds complete NDJSON lines into onLine and calls
 // onEof on disconnect, read failure, or quit. Waits on the connection event
@@ -572,8 +716,8 @@ private:
 // self-exits when the last client disconnects.
 class Server {
 public:
-    Server(std::string endpoint, Runner& runner)
-        : endpoint_(std::move(endpoint)), runner_(runner) {}
+    Server(std::string endpoint, int tcpPort, std::string token, Runner& runner)
+        : endpoint_(std::move(endpoint)), tcpPort_(tcpPort), token_(std::move(token)), runner_(runner) {}
 
     ~Server() { stop(); }
 
@@ -583,28 +727,39 @@ public:
     // False when the endpoint is owned by another runner: the caller
     // reports a startup error and exits 1.
     bool start() {
+        if (tcpPort_ >= 0) {
+            unsigned short bound = 0;
+            tcpListener_ = makeTcpListener(static_cast<unsigned short>(tcpPort_), bound);
+            if (tcpListener_ == kInvalidSocket) {
+                return false;
+            }
+            boundPort_ = bound;
+        }
 #ifdef _WIN32
-        guard_ = makeGuard(endpoint_);
-        if (guard_ == INVALID_HANDLE_VALUE) {
-            return false;
-        }
-        listener_ = makeListener(endpoint_, true);
-        if (listener_ == INVALID_HANDLE_VALUE) {
-            return false;
-        }
-        quitEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (quitEvent_ == nullptr) {
-            return false;
+        else {
+            guard_ = makeGuard(endpoint_);
+            if (guard_ == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            listener_ = makeListener(endpoint_, true);
+            if (listener_ == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            quitEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (quitEvent_ == nullptr) {
+                return false;
+            }
         }
 #else
-        listener_ = makeListener(endpoint_);
-        if (listener_ < 0) {
+        else if ((listener_ = makeListener(endpoint_)) < 0) {
             return false;
         }
 #endif
         acceptor_ = std::thread([this] { acceptLoop(); });
         return true;
     }
+
+    int boundPort() const { return boundPort_; }
 
     void setReady(const json& readyEvent) {
         const std::string line = readyEvent.dump();
@@ -656,13 +811,54 @@ private:
 #ifdef _WIN32
         HANDLE handle = INVALID_HANDLE_VALUE;
 #else
-        int fd = -1;
+        int handle = -1;
 #endif
+        SocketHandle sock = kInvalidSocket;
+        bool authenticated = false;
     };
 
     void acceptLoop() {
+        if (tcpPort_ >= 0) {
+            acceptTcpLoop();
+            return;
+        }
+        acceptLocalLoop();
+    }
+
+    void acceptTcpLoop() {
         while (!quit_.load()) {
 #ifdef _WIN32
+            fd_set reads;
+            FD_ZERO(&reads);
+            FD_SET(tcpListener_, &reads);
+            timeval tv{kPollIntervalMs / 1000, (kPollIntervalMs % 1000) * 1000};
+            if (::select(0, &reads, nullptr, nullptr, &tv) <= 0) {
+                continue;
+            }
+#else
+            pollfd pfd{tcpListener_, POLLIN, 0};
+            if (::poll(&pfd, 1, static_cast<int>(kPollIntervalMs)) <= 0) {
+                continue;
+            }
+#endif
+            const SocketHandle s = ::accept(tcpListener_, nullptr, nullptr);
+            if (s == kInvalidSocket) {
+                continue;
+            }
+            if (quit_.load()) {
+                closeSocket(s);
+                break;
+            }
+            auto client = std::make_shared<Client>();
+            client->sink = std::make_shared<TcpSink>(s);
+            client->sock = s;
+            registerClient(client);
+        }
+    }
+
+#ifdef _WIN32
+    void acceptLocalLoop() {
+        while (!quit_.load()) {
             OVERLAPPED ov{};
             ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             if (ov.hEvent == nullptr) {
@@ -690,8 +886,15 @@ private:
             // A fresh listening instance right away, so the next client can
             // connect while this one is being served.
             listener_ = makeListener(endpoint_, false);
-            registerClient(std::make_shared<PipeSink>(handle), handle);
+            auto client = std::make_shared<Client>();
+            client->sink = std::make_shared<PipeSink>(handle);
+            client->handle = handle;
+            registerClient(client);
+        }
+    }
 #else
+    void acceptLocalLoop() {
+        while (!quit_.load()) {
             pollfd pfd{listener_, POLLIN, 0};
             if (::poll(&pfd, 1, static_cast<int>(kPollIntervalMs)) <= 0) {
                 continue;
@@ -704,30 +907,20 @@ private:
                 ::close(fd);
                 break;
             }
-            registerClient(std::make_shared<UnixSink>(fd), fd);
-#endif
+            auto client = std::make_shared<Client>();
+            client->sink = std::make_shared<UnixSink>(fd);
+            client->handle = fd;
+            registerClient(client);
         }
     }
+#endif
 
-    void registerClient(std::shared_ptr<Sink> sink,
-#ifdef _WIN32
-                        HANDLE handle
-#else
-                        int fd
-#endif
-    ) {
-        auto client = std::make_shared<Client>();
-        client->sink = sink;
-#ifdef _WIN32
-        client->handle = handle;
-#else
-        client->fd = fd;
-#endif
+    void registerClient(const std::shared_ptr<Client>& client) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             clients_.push_back(client);
             if (!readyLine_.empty()) {
-                sink->writeLine(readyLine_);
+                client->sink->writeLine(readyLine_);
             }
         }
         connected_.fetch_add(1);
@@ -735,26 +928,35 @@ private:
         readers_.emplace_back([this, client] { readLoop(client); });
     }
 
-    // Detached reader per client; on quit the Server::stop() clears the
-    // client list and closes the sinks, ending these loops.
+    // One reader per client; on quit the Server::stop() sets the quit flags
+    // and closes the sinks, ending these loops.
     void readLoop(const std::shared_ptr<Client>& client) {
+        if (client->sock != kInvalidSocket) {
+            readSocketClient(
+                client->sock,
+                [this, client](const std::string& line) { dispatch(line, *client); },
+                [this] { return !quit_.load(); },
+                [this, client] { dropClient(client.get()); });
+            return;
+        }
 #ifdef _WIN32
         readClient(
             client->handle,
             quitEvent_,
-            [this, client](const std::string& line) { dispatch(line, client->sink); },
+            [this, client](const std::string& line) { dispatch(line, *client); },
             [this] { return !quit_.load(); },
             [this, client] { dropClient(client.get()); });
 #else
         readClient(
-            client->fd,
-            [this, client](const std::string& line) { dispatch(line, client->sink); },
+            client->handle,
+            [this, client](const std::string& line) { dispatch(line, *client); },
             [this] { return !quit_.load(); },
             [this, client] { dropClient(client.get()); });
 #endif
     }
 
-    void dispatch(const std::string& line, const std::shared_ptr<Sink>& sink) {
+    void dispatch(const std::string& line, Client& client) {
+        const std::shared_ptr<Sink>& sink = client.sink;
         json message;
         try {
             message = json::parse(line);
@@ -763,6 +965,22 @@ private:
             return;
         }
         const std::string type = message.value("type", "");
+        if (!client.authenticated) {
+            // Listen-mode gate: the first message must authenticate. Protects
+            // the TCP transport, which any local process could reach.
+            const bool ok = type == kRequestAuth &&
+                            !token_.empty() && message.value("token", "") == token_;
+            if (!ok) {
+                sink->writeLine(json{{"type", kEventError},
+                                     {"id", nullptr},
+                                     {"message", "authentication required: send {\"type\":\"auth\",\"token\":...} first"}}
+                                    .dump());
+                dropBySink(sink);
+                return;
+            }
+            client.authenticated = true;
+            return;
+        }
         if (type == kRequestGenerate) {
             runner_.enqueue(runner::parseRequest(message), sink);
         } else if (type == kRequestCancel) {
@@ -792,6 +1010,8 @@ private:
     }
 
     std::string endpoint_;
+    int tcpPort_;
+    std::string token_;
     Runner& runner_;
 #ifdef _WIN32
     HANDLE listener_ = INVALID_HANDLE_VALUE;
@@ -800,6 +1020,8 @@ private:
 #else
     int listener_ = -1;
 #endif
+    SocketHandle tcpListener_ = kInvalidSocket;
+    int boundPort_ = 0;
     std::thread acceptor_;
     std::vector<std::thread> readers_;
     std::mutex mutex_;
@@ -837,6 +1059,13 @@ int main(int argc, char** argv) {
         return 2;
     }
     const bool listenMode = !options.listenEndpoint.empty();
+    const bool tcpMode = options.listenTcpPort >= 0;
+    if (listenMode && tcpMode) {
+        logError(json{{"type", kEventError},
+                      {"id", nullptr},
+                      {"message", "--listen and --listen-tcp are mutually exclusive"}});
+        return 2;
+    }
     if (listenMode && !runner::validListenEndpoint(options.listenEndpoint,
 #ifdef _WIN32
                                                    true
@@ -905,22 +1134,40 @@ int main(int argc, char** argv) {
                                      )}};
 
     Runner runner(std::move(pipeline));
-    if (!listenMode) {
+    if (!listenMode && options.listenTcpPort < 0) {
         std::fputs((ready.dump() + "\n").c_str(), g_events);
         std::fflush(g_events);
         runner.runStdio();
         return 0;
     }
 
-    Server server(options.listenEndpoint, runner);
+#ifdef _WIN32
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        logError(json{{"type", kEventError}, {"id", nullptr}, {"message", "WSAStartup failed"}});
+        return 2;
+    }
+#endif
+    Server server(tcpMode ? "" : options.listenEndpoint, tcpMode ? options.listenTcpPort : -1,
+                  options.token, runner);
     runner.onSinkBroken([&server](const std::shared_ptr<Sink>& sink) { server.dropBySink(sink); });
     if (!server.start()) {
         logError(json{{"type", kEventError},
                       {"id", nullptr},
-                      {"message", "listen endpoint already in use: " + options.listenEndpoint}});
+                      {"message", "listen endpoint already in use: " +
+                                      (tcpMode ? "127.0.0.1:" + std::to_string(options.listenTcpPort)
+                                               : options.listenEndpoint)}});
         return 1;
     }
-    server.setReady(ready);
+    json readyShared = ready;
+    if (tcpMode) {
+        readyShared["port"] = server.boundPort();
+    }
+    // The spawning client learns pid/port from the child's stdout: the ready
+    // event goes there even though the protocol runs over the listener.
+    std::fputs((readyShared.dump() + "\n").c_str(), g_events);
+    std::fflush(g_events);
+    server.setReady(readyShared);
     runner.runShared();
     server.stop();
     // OpenVINO's NPU plugin keeps background threads that race static

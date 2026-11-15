@@ -50,6 +50,25 @@ TEST_CASE("parseArgs") {
         CHECK(!runner::validListenEndpoint("\\\\.\\pipe\\", true));
         CHECK(runner::validListenEndpoint("/tmp/tlc.sock", false));
     }
+    SUBCASE("listen tcp port parsed") {
+        char* argv[] = {(char*)"prog", (char*)"--listen-tcp", (char*)"0"};
+        const auto o = parseArgs(3, argv);
+        CHECK(o.listenTcpPort == 0);
+    }
+    SUBCASE("listen tcp disabled by default") {
+        char* argv[] = {(char*)"prog"};
+        CHECK(parseArgs(1, argv).listenTcpPort == -1);
+    }
+    SUBCASE("listen tcp bad value throws") {
+        char* argv[] = {(char*)"prog", (char*)"--listen-tcp", (char*)"abc"};
+        CHECK_THROWS(parseArgs(3, argv));
+    }
+    SUBCASE("token parsed, default empty") {
+        char* argv[] = {(char*)"prog", (char*)"--token", (char*)"s3cret"};
+        CHECK(parseArgs(3, argv).token == "s3cret");
+        char* none[] = {(char*)"prog"};
+        CHECK(parseArgs(1, none).token.empty());
+    }
     SUBCASE("unknown args ignored") {
         char* argv[] = {(char*)"prog", (char*)"--wat", (char*)"--model", (char*)"/m"};
         const auto o = parseArgs(4, argv);

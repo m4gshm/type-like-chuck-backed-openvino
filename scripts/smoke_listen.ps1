@@ -28,14 +28,18 @@ function Send($p, $obj) {
 
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $runner
-$psi.Arguments = "--model `"$model`" --device CPU --listen `"$pipe`""
+$psi.Arguments = "--model `"$model`" --device CPU --listen `"$pipe`" --token s3cret"
 $psi.RedirectStandardError = $true
+$psi.RedirectStandardOutput = $true
 $psi.UseShellExecute = $false
 $proc = [System.Diagnostics.Process]::Start($psi)
 
 Start-Sleep -Seconds 20  # model load
 
+function Send-Auth($p) { Send $p @{ type = 'auth'; token = 's3cret' } }
+
 $c1 = Connect-Client
+Send-Auth $c1
 $ready1 = Read-Line $c1
 Write-Host "client1 ready: $ready1"
 
@@ -50,8 +54,18 @@ $proc2.WaitForExit(30000) | Out-Null
 Write-Host "second runner on taken endpoint: exit=$($proc2.ExitCode)"
 
 $c2 = Connect-Client
+Send-Auth $c2
 $ready2 = Read-Line $c2
 Write-Host "client2 ready: $ready2"
+
+# a token-less client must be rejected: error event, then the server closes
+$bad = Connect-Client
+[void] (Read-Line $bad)   # the ready broadcast arrives before auth
+Send $bad @{ type = 'generate'; id = 1; prompt = 'x'; maxTokens = 4; stop = @() }
+$err = (Read-Line $bad) | ConvertFrom-Json
+if ($err.type -ne 'error') { Write-Host "FAIL: expected auth error, got $err"; exit 1 }
+Write-Host "token-less client rejected"
+$bad.Dispose()
 
 Send $c1 @{ type = 'generate'; id = 7; prompt = 'def add(a, b):'; maxTokens = 16; stop = @("\n") }
 $toks = @()
@@ -103,5 +117,34 @@ $exited = $proc.WaitForExit(30000)
 Write-Host "dead client dropped, runner exited: $exited (exit=$($proc.ExitCode))"
 if (-not $exited) { $proc.Kill(); Write-Host 'FAIL: dead client not dropped'; exit 1 }
 if ($proc.ExitCode -ne 0) { Write-Host "FAIL: nonzero exit $($proc.ExitCode)"; exit 1 }
+
+# TCP transport: spawner learns the random port from the child's stdout ready
+$psiTcp = [System.Diagnostics.ProcessStartInfo]::new()
+$psiTcp.FileName = $runner
+$psiTcp.Arguments = "--model `"$model`" --device CPU --listen-tcp 0 --token s3cret"
+$psiTcp.RedirectStandardError = $true
+$psiTcp.RedirectStandardOutput = $true
+$psiTcp.UseShellExecute = $false
+$procTcp = [System.Diagnostics.Process]::Start($psiTcp)
+$tcpReady = ($procTcp.StandardOutput.ReadLine()) | ConvertFrom-Json
+if ($tcpReady.type -ne 'ready' -or -not $tcpReady.port) { Write-Host "FAIL: tcp ready event: $tcpReady"; exit 1 }
+Write-Host "tcp ready: port=$($tcpReady.port) pid=$($tcpReady.pid)"
+
+$tc = [System.Net.Sockets.TcpClient]::new('127.0.0.1', [int]$tcpReady.port)
+$ts = $tc.GetStream()
+$tw = [System.IO.StreamWriter]::new($ts, [System.Text.Encoding]::UTF8, 4096, $true)
+$tr = [System.IO.StreamReader]::new($ts, [System.Text.Encoding]::UTF8, $false, 4096, $true)
+$tw.WriteLine('{"type":"auth","token":"s3cret"}'); $tw.Flush()
+$tw.WriteLine('{"type":"generate","id":5,"prompt":"def div(a, b):","maxTokens":16,"stop":["\n"]}'); $tw.Flush()
+while ($true) {
+    $ev = $tr.ReadLine() | ConvertFrom-Json
+    if ($ev.type -eq 'token' -and $ev.id -ne 5) { Write-Host "FAIL: wrong token id $ev"; exit 1 }
+    if ($ev.type -eq 'done') { Write-Host "tcp done: finish=$($ev.finishReason) id=$($ev.id)"; break }
+    if ($ev.type -eq 'error') { Write-Host "FAIL: tcp error $ev"; exit 1 }
+}
+$tc.Close()
+$exited = $procTcp.WaitForExit(15000)
+if (-not ($exited -and $procTcp.ExitCode -eq 0)) { Write-Host "FAIL: tcp runner exit $($procTcp.ExitCode)"; exit 1 }
+Write-Host "tcp runner self-exit: exit=0"
 
 Write-Host 'SMOKE OK'

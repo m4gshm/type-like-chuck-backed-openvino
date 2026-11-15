@@ -30,7 +30,7 @@ access to the cache location; every start then recompiles).
 
 Events on stdout (one JSON object per line):
 - `{"type":"version","app":"...","ovGenai":"X.Y.Z.W","pid":N}` for `--version` (before any model load);
-- `{"type":"ready","model":...,"device":...,"ctx":N,"pid":N}` after the pipeline loads;
+- `{"type":"ready","model":...,"device":...,"ctx":N,"pid":N[,"port":N]}` after the pipeline loads;
 - `{"type":"token","id":N,"text":"..."}` per generated piece;
 - `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel"}`;
 - `{"type":"error","id":N|null,"message":"..."}`.
@@ -49,7 +49,16 @@ Exit codes: 0 = normal, 1 = model load failure, 2 = usage/loader error.
 
 `--listen <endpoint>` serves the same protocol over a local IPC endpoint instead of
 stdin/stdout: a named pipe (`\\.\pipe\NAME`) on Windows, a unix domain socket on
-Linux — no TCP port, no API key. The runner tracks its connected clients and exits
+Linux — no TCP port, no API key. `--listen-tcp <port>` (port `0` = pick a random
+free port) serves the protocol over `127.0.0.1:<port>` instead, for setups where
+local IPC does not cross the plugin/backend boundary (VS Code remote/WSL); the
+chosen port is reported on the `ready` event, which the spawning process also
+receives on the child's stdout. The two options are mutually exclusive.
+
+With `--token <secret>`, every listen-mode client must send
+`{"type":"auth","token":"..."}` as its first message; anything else — or a wrong
+token — is answered with an `error` event and the connection is closed. Stdin/stdout
+mode requires no authentication. The runner tracks its connected clients and exits
 by itself when the last client disconnects (a client whose writes fail or stall past
 a 5 s write timeout counts as disconnected); the process that spawned it does not
 need to kill it. A second runner started on an already-owned endpoint fails with an

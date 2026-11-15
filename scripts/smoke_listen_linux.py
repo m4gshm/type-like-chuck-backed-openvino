@@ -51,6 +51,9 @@ class Client:
     def send(self, obj):
         self.sock.sendall((json.dumps(obj) + "\n").encode())
 
+    def auth(self):
+        self.send({"type": "auth", "token": "s3cret"})
+
     def close(self):
         self.sock.close()
 
@@ -62,14 +65,20 @@ def main():
     binary = os.path.join(ROOT, "build/linux/tlc-ovgenai-runner")
     env = library_env()
 
-    def spawn():
-        return subprocess.Popen([binary, "--model", model, "--device", device, "--listen", SOCK],
-                                env=env, stderr=subprocess.DEVNULL)
+    def spawn(args_extra=None):
+        args = [binary, "--model", model, "--device", device, "--token", "s3cret"]
+        if args_extra:
+            args += args_extra
+        else:
+            args += ["--listen", SOCK]
+        return subprocess.Popen(args, env=env, stderr=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, text=True)
 
     proc = spawn()
     time.sleep(15)  # model load
 
     c1 = Client()
+    c1.auth()
     ready = c1.line()
     assert ready["type"] == "ready" and ready["pid"] == proc.pid, ready
     print("client1 ready: pid", ready["pid"])
@@ -80,7 +89,18 @@ def main():
     assert code == 1, f"second runner exit {code}"
     print("second runner on taken endpoint: exit=1")
 
+    # a token-less client gets an auth error instead of generation
+    bad = Client()
+    bad.send({"type": "generate", "id": 1, "prompt": "x", "maxTokens": 4, "stop": []})
+    ev = bad.line()
+    while ev["type"] == "ready":   # the ready broadcast precedes the auth check
+        ev = bad.line()
+    assert ev["type"] == "error", ev
+    bad.close()
+    print("token-less client rejected")
+
     c2 = Client()
+    c2.auth()
     ready2 = c2.line()
     assert ready2["type"] == "ready", ready2
 
@@ -130,6 +150,33 @@ def main():
     print("dead client dropped, runner exited: exit=0")
 
     os.unlink(SOCK)
+    print("PIPE SMOKE OK")
+
+    # TCP transport: the spawner learns the random port from the child's stdout
+    proc = spawn(["--listen-tcp", "0"])
+    ready = json.loads(proc.stdout.readline())
+    assert ready["type"] == "ready" and ready.get("port"), ready
+    print("tcp ready: port", ready["port"], "pid", ready["pid"])
+
+    tc = socket.create_connection(("127.0.0.1", ready["port"]), timeout=30)
+    tc.sendall(b'{"type":"auth","token":"s3cret"}\n')
+    tc.sendall(b'{"type":"generate","id":5,"prompt":"def div(a, b):","maxTokens":16,"stop":["\\n"]}\n')
+    buffer = b""
+    while True:
+        while b"\n" not in buffer:
+            buffer += tc.recv(65536)
+        line, buffer = buffer.split(b"\n", 1)
+        ev = json.loads(line)
+        assert ev.get("type") != "error", ev
+        if ev["type"] == "token":
+            assert ev.get("id") == 5, ev
+        elif ev["type"] == "done":
+            print("tcp done: finish=%s id=%s" % (ev["finishReason"], ev["id"]))
+            break
+    tc.close()
+    assert proc.wait(timeout=30) == 0, "tcp self-exit"
+    print("tcp runner self-exit: exit=0")
+
     print("SMOKE OK")
 
 

@@ -23,6 +23,12 @@ struct Options {
     // --listen <endpoint>: serve NDJSON over a named pipe (Windows) / unix
     // domain socket (Linux) instead of stdin/stdout; empty = stdio mode.
     std::string listenEndpoint;
+    // --listen-tcp <port|0>: serve NDJSON over 127.0.0.1:<port>; 0 = pick a
+    // random free port and report it on ready. -1 = off. Overrides --listen.
+    int listenTcpPort = -1;
+    // --token <secret>: listen-mode clients must send {"type":"auth","token"}
+    // as their first message; wrong/missing token → error + disconnect.
+    std::string token;
 };
 
 // Windows endpoints must be named pipes (\\.\pipe\NAME); elsewhere any
@@ -44,6 +50,10 @@ inline Options parseArgs(int argc, char** argv) {
             options.modelPath = next();
         } else if (arg == "--listen") {
             options.listenEndpoint = next();
+        } else if (arg == "--listen-tcp") {
+            options.listenTcpPort = std::stoi(next());
+        } else if (arg == "--token") {
+            options.token = next();
         } else if (arg == "--version") {
             options.printVersion = true;
         } else if (arg == "--device") {
