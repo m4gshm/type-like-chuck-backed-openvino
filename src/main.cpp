@@ -108,6 +108,8 @@ public:
     // caller must drop it. Serialized per client by the implementation.
     virtual bool writeLine(const std::string& line) = 0;
     virtual void close() = 0;
+    // Per-connection label for the stderr diagnostics (set at registration).
+    int clientId = 0;
 };
 
 class StdioSink : public Sink {
@@ -550,7 +552,7 @@ public:
     }
 
     void enqueue(const runner::GenerateRequest& request, const std::shared_ptr<Sink>& sink) {
-        std::cerr << "[runner] generate id=" << request.id << " promptChars=" << request.prompt.size()
+        std::cerr << "[runner] client " << sink->clientId << " generate id=" << request.id << " promptChars=" << request.prompt.size()
                   << " maxTokens=" << request.maxTokens << " stops=" << request.stop.size() << '\n';
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -688,14 +690,14 @@ private:
             const int nativeReason = results.finish_reasons.empty() ? 0
                                                                     : static_cast<int>(results.finish_reasons.front());
             const std::string reason = runner::finishReason(cancelled_.load(), nativeReason);
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
+            std::cerr << "[runner] client " << job.sink->clientId << " generate id=" << request.id << " tokens=" << tokens << " finish=" << reason << '\n';
             job.sink->writeLine(json{{"type", kEventDone}, {"id", request.id}, {"finishReason", reason}}.dump());
         } catch (const std::exception& e) {
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
+            std::cerr << "[runner] client " << job.sink->clientId << " generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
             job.sink->writeLine(
                 json{{"type", kEventError}, {"id", request.id}, {"message", std::string("generate failed: ") + e.what()}}.dump());
         } catch (...) {
-            std::cerr << "[runner] generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
+            std::cerr << "[runner] client " << job.sink->clientId << " generate id=" << request.id << " tokens=" << tokens << " finish=error\n";
             job.sink->writeLine(json{{"type", kEventError}, {"id", request.id}, {"message", "generate failed: unknown exception"}}.dump());
         }
     }
@@ -820,6 +822,7 @@ private:
 #endif
         SocketHandle sock = kInvalidSocket;
         bool authenticated = false;
+        int id = 0;
     };
 
     void acceptLoop() {
@@ -921,6 +924,7 @@ private:
 #endif
 
     void registerClient(const std::shared_ptr<Client>& client) {
+        client->id = nextClientId_++;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             clients_.push_back(client);
@@ -928,7 +932,8 @@ private:
                 client->sink->writeLine(readyLine_);
             }
         }
-        std::cerr << "[runner] client connected (total " << connected_.fetch_add(1) + 1 << ")\n";
+        std::cerr << "[runner] client " << client->id << " connected (total " << connected_.fetch_add(1) + 1 << ")\n";
+        client->sink->clientId = client->id;
         hadClient_.store(true);
         readers_.emplace_back([this, client] { readLoop(client); });
     }
@@ -1007,7 +1012,7 @@ private:
             sink = (*it)->sink;
             clients_.erase(it);
         }
-        std::cerr << "[runner] client disconnected (total " << connected_.load() - 1 << ")\n";
+        std::cerr << "[runner] client " << sink->clientId << " disconnected (total " << connected_.load() - 1 << ")\n";
         sink->close();
         if (connected_.fetch_sub(1) == 1 && hadClient_.load()) {
             // Last client left: shut down and exit, no owner will kill us.
@@ -1036,6 +1041,7 @@ private:
     std::atomic<bool> quit_{false};
     std::atomic<int> connected_{0};
     std::atomic<bool> hadClient_{false};
+    int nextClientId_ = 1;
 };
 
 } // namespace
