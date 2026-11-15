@@ -2,7 +2,7 @@
 
 ## 1. Listen mode
 
-- [ ] 1.1 Parse `--listen <endpoint>` in `src/runner.hpp` (arg tests in `src/tests.cpp`: missing value, invalid path forms) and verify `task test`
+- [x] 1.1 Parse `--listen <endpoint>` in `src/runner.hpp` (arg tests in `src/tests.cpp`: missing value, invalid path forms) and verify `task test`
 - [ ] 1.2 Implement the Windows named pipe server and Linux unix socket server in `src/main.cpp`, parameterizing the NDJSON loop over the line source (stdin or connection); verify with a manual two-connection smoke script
 - [ ] 1.3 Report usage/loader failure on a taken pipe name (`error` event, exit 1) and verify with a unit or manual test
 
@@ -18,6 +18,6 @@
 
 ## 4. Contract and release
 
-- [ ] 4.1 Update `README.md` protocol section (token `id`, `ready.pid`, `--listen`, refcount self-exit) and `openspec/specs/openvino-genai-runner/spec.md` via this change's delta on archive
-- [ ] 4.2 Sync the mlx backend repo (`type-like-chuck-backed-mlx`, same change name) so both runners honor the identical contract; verify by diffing the protocol sections of both READMEs
+- [x] 4.1 Update `README.md` protocol section (token `id`, `ready.pid`, `--listen`, refcount self-exit) and `openspec/specs/openvino-genai-runner/spec.md` via this change's delta on archive
+- [x] 4.2 Sync the mlx backend repo (`type-like-chuck-backed-mlx`, same change name) so both runners honor the identical contract; verify by diffing the protocol sections of both READMEs
 - [ ] 4.3 Run `task build`, `task test`, `task e2e:protocol`; publish a `v*` release so the extension can pin it via `RUNNER_VERSION`

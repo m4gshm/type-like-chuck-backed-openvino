@@ -29,9 +29,9 @@ compiles; override with `--prop CACHE_DIR=...`, or run with no blob cache via
 access to the cache location; every start then recompiles).
 
 Events on stdout (one JSON object per line):
-- `{"type":"version","app":"...","ovGenai":"X.Y.Z.W"}` for `--version` (before any model load);
-- `{"type":"ready","model":...,"device":...,"ctx":N}` after the pipeline loads;
-- `{"type":"token","text":"..."}` per generated piece;
+- `{"type":"version","app":"...","ovGenai":"X.Y.Z.W","pid":N}` for `--version` (before any model load);
+- `{"type":"ready","model":...,"device":...,"ctx":N,"pid":N}` after the pipeline loads;
+- `{"type":"token","id":N,"text":"..."}` per generated piece;
 - `{"type":"done","id":N,"finishReason":"stop"|"length"|"cancel"}`;
 - `{"type":"error","id":N|null,"message":"..."}`.
 
@@ -41,10 +41,22 @@ the cancelled queued request is answered immediately with
 `{"type":"done","id":N,"finishReason":"cancel"}`), and `{"type":"shutdown"}` (drains
 the queue answering every pending request with `finishReason:"cancel"`, cancels the
 active generation and exits). Logs go to stderr only. The runner queues generate
-requests and serves them one at a time in arrival order: `token` events carry no id
-(only one generation is active) and always belong to the request being processed;
-`done`/`error` events carry the request id. Exit codes: 0 = normal, 1 = model
-load failure, 2 = usage/loader error.
+requests and serves them one at a time in arrival order: `token` events carry the
+id of the request being processed, `done`/`error` events carry the request id.
+Exit codes: 0 = normal, 1 = model load failure, 2 = usage/loader error.
+
+### Listen mode (shared runner)
+
+`--listen <endpoint>` serves the same protocol over a local IPC endpoint instead of
+stdin/stdout: a named pipe (`\\.\pipe\NAME`) on Windows, a unix domain socket on
+Linux — no TCP port, no API key. The runner tracks its connected clients and exits
+by itself when the last client disconnects (a client whose writes fail or stall past
+a 5 s write timeout counts as disconnected); the process that spawned it does not
+need to kill it. A second runner started on an already-owned endpoint fails with an
+`error` event and exit code 1. Cancel-by-id matches only within the requesting
+client's jobs, so several clients with overlapping ids never cancel or receive each
+other's streams. Generation stays one request at a time globally; requests are
+served in arrival order regardless of which client sent them.
 
 ## Build
 
@@ -55,6 +67,7 @@ target platform (downloaded automatically into `.cache/ov-genai/`):
 task build   # download runtime + native build for the host OS → build/
 task test    # unit tests (doctest via ctest)
 task smoke   # NDJSON smoke run (MODEL_DIR=<int8-ov model directory>)
+task smoke:listen  # two-client shared-mode smoke (MODEL_DIR=<int4-sym model directory>)
 ```
 
 Release-named binaries land in `build/`:

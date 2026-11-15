@@ -120,6 +120,12 @@ tasks:
         | {{if eq OS "windows"}}{{.BUILD_DIR}}\tlc-ovgenai-runner-win32-x64.exe{{else}}{{.BUILD_DIR}}/{{.RUNNER_POSIX}}{{end}} \
         --model "${MODEL_DIR:?set MODEL_DIR to an int8-ov model directory}" --device CPU
 
+  smoke:listen:
+    desc: Two-client shared-mode smoke (set MODEL_DIR to an int4-sym model directory; Windows only)
+    deps: [build]
+    cmds:
+      - powershell -ExecutionPolicy Bypass -File scripts\smoke_listen.ps1
+
   fmt:
     desc: Reformat src with clang-format (.clang-format; the binary VS Code cpptools uses)
     cmds:

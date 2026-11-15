@@ -31,6 +31,25 @@ TEST_CASE("parseArgs") {
         CHECK(o.printVersion);
         CHECK(o.modelPath.empty());
     }
+    SUBCASE("listen endpoint parsed") {
+        char* argv[] = {(char*)"prog", (char*)"--listen", (char*)"\\\\.\\pipe\\tlc-runner-x", (char*)"--model", (char*)"/m"};
+        const auto o = parseArgs(5, argv);
+        CHECK(o.listenEndpoint == "\\\\.\\pipe\\tlc-runner-x");
+        CHECK(o.modelPath == "/m");
+    }
+    SUBCASE("missing listen value yields empty") {
+        char* argv[] = {(char*)"prog", (char*)"--listen"};
+        const auto o = parseArgs(2, argv);
+        CHECK(o.listenEndpoint.empty());
+    }
+    SUBCASE("listen endpoint validation") {
+        CHECK(!runner::validListenEndpoint("", true));
+        CHECK(!runner::validListenEndpoint("", false));
+        CHECK(runner::validListenEndpoint("\\\\.\\pipe\\tlc", true));
+        CHECK(!runner::validListenEndpoint("C:\\temp\\p", true));
+        CHECK(!runner::validListenEndpoint("\\\\.\\pipe\\", true));
+        CHECK(runner::validListenEndpoint("/tmp/tlc.sock", false));
+    }
     SUBCASE("unknown args ignored") {
         char* argv[] = {(char*)"prog", (char*)"--wat", (char*)"--model", (char*)"/m"};
         const auto o = parseArgs(4, argv);
