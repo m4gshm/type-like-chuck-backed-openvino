@@ -26,6 +26,9 @@ Add `id` to every `token` event (constant `kEventToken` gains the field). Old cl
 ### PID on `ready`
 `getpid()`-equivalent added to the ready event (`kEventReady` gains `pid`). Cheap, and the extension uses it for liveness pre-checks and status display.
 
+### Per-instance token
+The extension generates a random secret per spawn and passes it as `--token <secret>`; in listen mode the runner requires `auth` as the first message of each client connection and closes the connection on a wrong or missing token. This protects the TCP transport, which any local process can reach; stdio mode keeps no authentication (its pipes are private). Token lives on the command line and in the extension's discovery file, nowhere else.
+
 ## Risks / Trade-offs
 
 - [Windows named pipe blocking writes to a stalled client] → write with timeout / overlapped I/O; failure = disconnect.
