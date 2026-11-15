@@ -980,20 +980,26 @@ private:
         }
         const std::string type = message.value("type", "");
         if (!client.authenticated) {
-            // Listen-mode gate: the first message must authenticate. Protects
-            // the TCP transport, which any local process could reach.
-            const bool ok = type == kRequestAuth &&
-                            !token_.empty() && message.value("token", "") == token_;
-            if (!ok) {
-                sink->writeLine(json{{"type", kEventError},
-                                     {"id", nullptr},
-                                     {"message", "authentication required: send {\"type\":\"auth\",\"token\":...} first"}}
-                                    .dump());
-                dropBySink(sink);
+            // Auth gate for TCP only: any local user can reach a localhost
+            // port, while a named pipe lives in the creating user's namespace.
+            // Pipe (and stdin) clients skip the gate and authenticate
+            // implicitly on their first request.
+            if (client.sock == kInvalidSocket) {
+                client.authenticated = true;
+            } else {
+                const bool ok = type == kRequestAuth &&
+                                !token_.empty() && message.value("token", "") == token_;
+                if (!ok) {
+                    sink->writeLine(json{{"type", kEventError},
+                                         {"id", nullptr},
+                                         {"message", "authentication required: send {\"type\":\"auth\",\"token\":...} first"}}
+                                        .dump());
+                    dropBySink(sink);
+                    return;
+                }
+                client.authenticated = true;
                 return;
             }
-            client.authenticated = true;
-            return;
         }
         if (type == kRequestGenerate) {
             runner_.enqueue(runner::parseRequest(message), sink);

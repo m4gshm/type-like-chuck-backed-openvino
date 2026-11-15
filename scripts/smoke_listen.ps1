@@ -31,6 +31,7 @@ $psi.FileName = $runner
 $psi.Arguments = "--model `"$model`" --device CPU --listen `"$pipe`" --token s3cret"
 $psi.RedirectStandardError = $true
 $psi.RedirectStandardOutput = $true
+$psi.RedirectStandardInput = $true   # keep stdin open: the spawner's stdio is a client now
 $psi.UseShellExecute = $false
 $proc = [System.Diagnostics.Process]::Start($psi)
 
@@ -58,14 +59,28 @@ Send-Auth $c2
 $ready2 = Read-Line $c2
 Write-Host "client2 ready: $ready2"
 
-# a token-less client must be rejected: error event, then the server closes
-$bad = Connect-Client
-[void] (Read-Line $bad)   # the ready broadcast arrives before auth
-Send $bad @{ type = 'generate'; id = 1; prompt = 'x'; maxTokens = 4; stop = @() }
-$err = (Read-Line $bad) | ConvertFrom-Json
+# a token-less client must be rejected — over TCP only; pipe clients skip auth
+$psiTcp2 = [System.Diagnostics.ProcessStartInfo]::new()
+$psiTcp2.FileName = $runner
+$psiTcp2.Arguments = "--model `"$model`" --device CPU --listen-tcp 0 --token s3cret"
+$psiTcp2.RedirectStandardError = $true
+$psiTcp2.RedirectStandardOutput = $true
+$psiTcp2.RedirectStandardInput = $true
+$psiTcp2.UseShellExecute = $false
+$procTcp2 = [System.Diagnostics.Process]::Start($psiTcp2)
+[void] ($procTcp2.StandardOutput.ReadLine())
+$tcp2port = (($procTcp2.StandardOutput.ReadLine()) | ConvertFrom-Json).port
+$bad = [System.Net.Sockets.TcpClient]::new('127.0.0.1', [int]$tcp2port)
+$bs = $bad.GetStream()
+$bw = [System.IO.StreamWriter]::new($bs, [System.Text.Encoding]::UTF8, 4096, $true)
+$br = [System.IO.StreamReader]::new($bs, [System.Text.Encoding]::UTF8, $false, 4096, $true)
+$bw.WriteLine('{"type":"generate","id":1,"prompt":"x","maxTokens":4,"stop":[]}')
+$bw.Flush()
+[void] ($br.ReadLine())   # the ready broadcast arrives before the auth error
+$err = ($br.ReadLine()) | ConvertFrom-Json
 if ($err.type -ne 'error') { Write-Host "FAIL: expected auth error, got $err"; exit 1 }
-Write-Host "token-less client rejected"
-$bad.Dispose()
+Write-Host "token-less TCP client rejected"
+$bad.Dispose(); $procTcp2.Kill()
 
 Send $c1 @{ type = 'generate'; id = 7; prompt = 'def add(a, b):'; maxTokens = 16; stop = @("\n") }
 $toks = @()
@@ -97,8 +112,10 @@ while ($true) {
     elseif ($ev.type -eq 'error') { Write-Host "client2 error: $($ev.message)"; exit 1 }
 }
 
-# last client leaves: the runner must self-exit
+# last client leaves: the runner must self-exit (stdin counts as a client,
+# so closing it is what triggers the exit here)
 $c2.Dispose()
+$proc.StandardInput.Close()
 $exited = $proc.WaitForExit(15000)
 Write-Host "runner self-exit after last client: $exited (exit=$($proc.ExitCode))"
 if (-not $exited) { $proc.Kill(); exit 1 }
@@ -113,6 +130,7 @@ $c3 = Connect-Client
 Send $c3 @{ type = 'generate'; id = 1; prompt = 'tell me a very long story'; maxTokens = 8192; stop = @() }
 Start-Sleep -Seconds 3   # generation is streaming tokens into the pipe
 $c3.Dispose()            # die without reading: writes to it must fail
+$proc.StandardInput.Close()
 $exited = $proc.WaitForExit(30000)
 Write-Host "dead client dropped, runner exited: $exited (exit=$($proc.ExitCode))"
 if (-not $exited) { $proc.Kill(); Write-Host 'FAIL: dead client not dropped'; exit 1 }
@@ -124,6 +142,7 @@ $psiTcp.FileName = $runner
 $psiTcp.Arguments = "--model `"$model`" --device CPU --listen-tcp 0 --token s3cret"
 $psiTcp.RedirectStandardError = $true
 $psiTcp.RedirectStandardOutput = $true
+$psiTcp.RedirectStandardInput = $true
 $psiTcp.UseShellExecute = $false
 $procTcp = [System.Diagnostics.Process]::Start($psiTcp)
 $tcpReady = ($procTcp.StandardOutput.ReadLine()) | ConvertFrom-Json
@@ -143,6 +162,7 @@ while ($true) {
     if ($ev.type -eq 'error') { Write-Host "FAIL: tcp error $ev"; exit 1 }
 }
 $tc.Close()
+$procTcp.StandardInput.Close()
 $exited = $procTcp.WaitForExit(15000)
 if (-not ($exited -and $procTcp.ExitCode -eq 0)) { Write-Host "FAIL: tcp runner exit $($procTcp.ExitCode)"; exit 1 }
 Write-Host "tcp runner self-exit: exit=0"
