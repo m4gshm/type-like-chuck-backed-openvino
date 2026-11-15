@@ -6,21 +6,22 @@ Each VS Code window spawns its own runner process and loads its own copy of the 
 
 ## What Changes
 
-- **Listen mode**: the runner gains `--listen <endpoint>` — it serves the same NDJSON protocol over a platform-local named pipe (Windows) / unix domain socket (Linux) instead of (or after) exhausting stdin, without opening any TCP port.
+- **Listen mode**: the runner gains `--listen <endpoint>` (named pipe on Windows, unix domain socket on Linux) and `--listen-tcp <port|0>` (a localhost TCP port; `0` = pick a random free port and report it on `ready`) — the same NDJSON protocol over a local connection instead of stdin/stdout, without requiring an API key. TCP covers setups where local IPC does not cross the plugin/backend boundary (VS Code remote/WSL).
 - **Client refcount and self-exit**: the runner tracks connected clients and exits by itself when the last client disconnects (after having had at least one), so no client needs to kill it; the spawning window closing does not terminate the runner while other clients remain.
 - **Per-request token routing**: `token` events carry the request `id` so two concurrent clients cannot receive each other's tokens (today tokens carry no id and belong to "the oldest pending request" — single-client-only).
-- **PID exposure**: the runner reports its PID on the `ready` event, so clients can validate backend liveness and display it.
+- **PID and port exposure**: the runner reports its PID — and, with `--listen-tcp 0`, the chosen port — on the `ready` event, so clients can validate backend liveness and record how to connect.
+- **No state files in the runner**: instance discovery (a file per runner in a shared directory, matching by model/device/context) is owned by the extension; the runner only listens and reports.
 - Readiness for both TLC stdio backends: the same listen-mode contract is specified and implemented in the mlx runner repository (`type-like-chuck-backed-mlx`, change `shared-stdio-runner`) so the extension speaks one protocol with both.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `runner-sharing`: the shared/listen-mode lifecycle — listen endpoint, client refcount with self-termination, per-client stream isolation, PID exposure.
+- `runner-sharing`: the shared/listen-mode lifecycle — listen transports (pipe/socket/TCP), client refcount with self-termination, per-client stream isolation, PID and port exposure.
 
 ### Modified Capabilities
 
-- `openvino-genai-runner`: the "NDJSON stdio protocol" requirement currently fixes token events as id-less and transport as private stdin/stdout; sharing adds token ids and the listen transport.
+- `openvino-genai-runner`: the "NDJSON stdio protocol" requirement currently fixes token events as id-less and transport as private stdin/stdout; sharing adds token ids and the listen transports.
 
 ## Impact
 

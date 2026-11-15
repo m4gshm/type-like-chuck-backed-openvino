@@ -3,14 +3,18 @@
 ## ADDED Requirements
 
 ### Requirement: Listen mode
-The runner SHALL accept `--listen <endpoint>` to serve its NDJSON protocol over a local named pipe (Windows, `\\.\pipe\...`) or unix domain socket (Linux) instead of stdin/stdout, without opening any TCP port and without requiring an API key. Requests, events, ordering, cancellation and shutdown semantics SHALL be identical on both transports. The listen endpoint MAY combine with `--model` and the usual start options; readiness is reported on the connection as today.
+The runner SHALL accept `--listen <endpoint>` to serve its NDJSON protocol over a local named pipe (Windows, `\\.\pipe\...`) or unix domain socket (Linux), and `--listen-tcp <port>` (port `0` = a random free localhost port, the chosen port reported on `ready`) to serve it over `127.0.0.1:<port>` — without requiring an API key. Requests, events, ordering, cancellation and shutdown semantics SHALL be identical on all transports. The listen endpoint MAY combine with `--model` and the usual start options; readiness is reported on the connection as today. The runner SHALL NOT read or write any instance-discovery files; that is the client's responsibility.
 
 #### Scenario: Client connects and generates
 - **WHEN** the runner starts with `--listen <pipe>` and a client connects and sends a `generate` request
 - **THEN** the client receives the same `token`/`done` event stream as a stdin/stdout client would
 
-#### Scenario: No TCP port
-- **WHEN** the runner runs in listen mode
+#### Scenario: TCP with a random port
+- **WHEN** the runner starts with `--listen-tcp 0` and a client connects to the reported port on `127.0.0.1`
+- **THEN** the client receives the same `token`/`done` event stream, and the `ready` event carries the chosen port
+
+#### Scenario: Default transport stays local IPC
+- **WHEN** the runner runs in listen mode with `--listen`
 - **THEN** it has no listening TCP socket; only the named pipe/domain socket endpoint exists
 
 ### Requirement: Client refcount and self-exit
@@ -43,9 +47,13 @@ Every `token` event SHALL carry the `id` of the request it belongs to, so that m
 - **WHEN** a legacy client sends a `generate` request without listening to ids
 - **THEN** the token stream is unchanged apart from the added `id` field, which legacy clients ignore
 
-### Requirement: PID exposure on ready
-The `ready` event SHALL include the runner's process id (`pid`), so clients can validate backend liveness before connecting and identify the process in status output.
+### Requirement: PID and port exposure on ready
+The `ready` event SHALL include the runner's process id (`pid`) — and, when started with `--listen-tcp 0`, the chosen localhost port (`port`) — so clients can validate backend liveness before connecting, record how to connect, and identify the process in status output.
 
 #### Scenario: Ready event carries the pid
 - **WHEN** the runner finishes startup and emits the `ready` event
 - **THEN** the event includes the runner's own OS process id
+
+#### Scenario: Ready event carries the chosen TCP port
+- **WHEN** the runner starts with `--listen-tcp 0` and emits the `ready` event
+- **THEN** the event includes the actual bound port
