@@ -80,6 +80,9 @@ jobs:
         with:
           name: tlc-ovgenai-runner-linux-x64
           path: build
+      # artifact upload/download does not preserve the executable bit
+      - name: restore exec bit
+        run: chmod +x build/tlc-ovgenai-runner-linux-x64
       - name: cache test model
         uses: actions/cache@v4
         with:
