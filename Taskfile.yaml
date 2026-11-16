@@ -170,6 +170,15 @@ tasks:
     cmds:
       - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
 
+  e2e:prebuilt:
+    desc: E2E suite against the prebuilt binary in build/ (CI; runtime from .cache, no build dep)
+    deps: [model]
+    env:
+      E2E_READY_TIMEOUT: '{{.E2E_READY_TIMEOUT | default "300"}}'
+      LD_LIBRARY_PATH: '{{.OV_LIB_POSIX}}'
+    cmds:
+      - python3 scripts/e2e.py test --model '{{.MODEL_DIR}}' --device '{{.E2E_DEVICE | default "auto"}}'
+
   e2e:npu:
     desc: 'Full E2E suite on NPU over the nf4 models (long ready timeout: first load compiles the graph)'
     deps: [models:nf4]
