@@ -18,7 +18,7 @@ The repository SHALL produce a prebuilt runner binary for each supported platfor
 - **THEN** CI builds both target binaries, smoke-tests the library loader on each OS, and attaches both binaries to a GitHub release
 
 ### Requirement: NDJSON stdio protocol
-The runner SHALL read one completion request per stdin line as a JSON object and SHALL write newline-delimited JSON events to stdout: one `token` event per generated piece (with the text), one `done` event at the end of a generation, and `error` events on failures. Human-readable logs SHALL go to stderr only. stdout SHALL carry no non-JSON output.
+The runner SHALL read one completion request per stdin line as a JSON object and SHALL write newline-delimited JSON events to stdout: one `token` event per generated piece (with the text and the request `id`), one `done` event at the end of a generation, and `error` events on failures. Human-readable logs SHALL go to stderr only. stdout SHALL carry no non-JSON output. When started with `--listen <endpoint>` the same protocol SHALL be served over a local named pipe (Windows) or unix domain socket (Linux) per the `runner-sharing` capability, with no TCP port and no API key.
 
 #### Scenario: Streaming generation
 - **WHEN** a completion request is written to the runner's stdin
@@ -31,7 +31,7 @@ The runner SHALL read one completion request per stdin line as a JSON object and
 #### Scenario: Queued requests
 - **WHEN** a `generate` request arrives while a generation is in progress
 - **THEN** the runner queues it and processes requests strictly in arrival order, each ending with a `done` or `error` event carrying its request `id`
-- **AND** `token` events carry no id (only one generation is ever active), so they always belong to the currently processed request
+- **AND** `token` events carry the `id` of the request being generated, so a multi-client (listen-mode) session never routes tokens to the wrong client
 
 #### Scenario: Cancel by request id
 - **WHEN** a `cancel` request with an integer `id` arrives and that request is queued

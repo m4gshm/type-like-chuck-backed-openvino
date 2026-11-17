@@ -55,6 +55,7 @@ jobs:
 
   e2e:
     name: e2e (model suite)
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,13 +73,23 @@ jobs:
         with:
           path: .cache/ov-genai
           key: ov-genai-${{ hashFiles('Taskfile.yaml') }}-linux
+      - name: fetch runtime on cache miss
+        run: task runtime
+      - name: download prebuilt runner
+        uses: actions/download-artifact@v5
+        with:
+          name: tlc-ovgenai-runner-linux-x64
+          path: build
+      # artifact upload/download does not preserve the executable bit
+      - name: restore exec bit
+        run: chmod +x build/tlc-ovgenai-runner-linux-x64
       - name: cache test model
         uses: actions/cache@v4
         with:
           path: .cache/models
           key: e2e-model-${{ hashFiles('scripts/e2e.py') }}
       - name: run e2e suite
-        run: task e2e
+        run: task e2e:prebuilt
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
